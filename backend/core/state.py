@@ -89,6 +89,23 @@ def get_model() -> str:
     return PROVIDER_CONFIGS.get(_state["provider"], {}).get("model", "")
 
 
+def get_extraction_model() -> str:
+    """Return the model to use for resume/JD extraction.
+
+    Extraction is the foundation of every score, so a provider may nominate a
+    stronger model for it via `extraction_model` in config.yaml while the rest
+    of the pipeline (scoring summaries, relevance gate) runs on the cheaper
+    default. Falls back to the active model when unset.
+
+    An explicit admin model override always wins - if someone pinned a model in
+    the UI, honour it rather than silently calling a different one.
+    """
+    if _state["model"]:
+        return _state["model"]
+    cfg = PROVIDER_CONFIGS.get(_state["provider"], {})
+    return cfg.get("extraction_model") or cfg.get("model", "")
+
+
 def set_active(provider: str, model: str | None = None) -> None:
     """Set the active provider and optional model override.
 

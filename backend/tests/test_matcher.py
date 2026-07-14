@@ -105,6 +105,80 @@ def test_certifications_none_when_jd_empty():
     assert score_certifications(RESUME, {}) is None
 
 
+# === Experience years: full-time-equivalent, not raw calendar span ===
+
+
+def test_total_experience_years_is_fte_weighted():
+    """Part-time work must not count as full years, and concurrent roles once."""
+    from services.extractors.resume_extractor import _total_experience_years
+
+    # 2 years as a working student (20h/week) is 1.0 FTE year, not 2.
+    ws_only = [
+        {
+            "employment_type": "working student",
+            "start_date": "01/2020",
+            "end_date": "01/2022",
+        }
+    ]
+    assert 0.9 <= _total_experience_years(ws_only) <= 1.2
+
+    # Same span full-time is worth double
+    ft_only = [
+        {"employment_type": "full-time", "start_date": "01/2020", "end_date": "01/2022"}
+    ]
+    assert _total_experience_years(ft_only) > _total_experience_years(ws_only) * 1.7
+
+    # A working student job held during a full-time role adds nothing
+    concurrent = [
+        {
+            "employment_type": "full-time",
+            "start_date": "01/2022",
+            "end_date": "01/2024",
+        },
+        {
+            "employment_type": "working student",
+            "start_date": "01/2022",
+            "end_date": "01/2024",
+        },
+    ]
+    assert _total_experience_years(concurrent) == _total_experience_years(
+        [
+            {
+                "employment_type": "full-time",
+                "start_date": "01/2022",
+                "end_date": "01/2024",
+            }
+        ]
+    )
+
+    # Unknown employment type is assumed full-time rather than silently discounted
+    unknown = [{"start_date": "01/2022", "end_date": "01/2024"}]
+    assert _total_experience_years(unknown) > 1.8
+
+
+def test_extraction_uses_the_configured_extraction_model(monkeypatch):
+    """Extraction may run on a stronger model than the rest of the pipeline."""
+    from core import state
+
+    state.set_active("openai", None)  # no admin pin -> config decides
+    assert state.get_extraction_model() == "gpt-5-mini"
+    assert state.get_model() == "gpt-4o-mini"
+
+    # An explicit admin pin must win over the config default
+    state.set_active("openai", "gpt-4o-mini")
+    assert state.get_extraction_model() == "gpt-4o-mini"
+    state.set_active("openai", None)
+
+
+def test_reasoning_models_get_different_request_params():
+    """gpt-5 rejects max_tokens/temperature; sending them would 400."""
+    from services.llm.providers.openai import _is_reasoning_model
+
+    assert _is_reasoning_model("gpt-5-mini")
+    assert _is_reasoning_model("o3-mini")
+    assert not _is_reasoning_model("gpt-4o-mini")
+
+
 # === Gates: years and language level are pass/fail, never points ===
 
 

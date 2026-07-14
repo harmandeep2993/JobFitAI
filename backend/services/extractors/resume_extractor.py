@@ -11,6 +11,7 @@ import re
 
 from services.prompts import get_resume_prompt
 from core.config import RESUME_MAX_CHARS
+from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm, parse_json_response
 
@@ -117,35 +118,70 @@ def _entry_duration_years(entry: dict) -> float:
     return round((end - start).days / 365.25, 1)
 
 
+# Full-time-equivalent weight per employment type. A Werkstudent contract is
+# capped at ~20h/week during term and an internship is short and junior, so
+# counting either as a full year of professional experience inflates the total -
+# badly, for exactly the entry-level candidates this product serves. Recruiters
+# discount them the same way.
+_FTE_WEIGHTS = {
+    "full-time": 1.0,
+    "freelance": 1.0,
+    "apprenticeship": 1.0,
+    "research": 1.0,
+    "teaching": 1.0,
+    "part-time": 0.5,
+    "working student": 0.5,
+    "internship": 0.5,
+    "volunteer": 0.25,
+}
+_DEFAULT_FTE = 1.0
+
+
+def _fte_weight(entry: dict) -> float:
+    """Return the full-time-equivalent weight for an entry's employment type."""
+    raw = (entry.get("employment_type") or "").strip().lower()
+    return _FTE_WEIGHTS.get(raw, _DEFAULT_FTE)
+
+
 def _total_experience_years(entries: list) -> float:
     """
-    Total years of experience as the union of all date ranges.
+    Professional experience in full-time-equivalent years.
 
-    Merging overlapping ranges avoids double-counting concurrent roles
-    (the source of inflated, inconsistent totals).
+    Walks the timeline one month at a time and credits each month at the weight
+    of the most substantial role covering it. This does two things at once:
+    concurrent roles are never double-counted (a working student job held during
+    a full-time role adds nothing), and part-time work is credited at its real
+    weight rather than as a full year.
     """
-    intervals = []
+    spans = []
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         start = _parse_month_year(entry.get("start_date", ""))
         end = _parse_month_year(entry.get("end_date", ""))
         if start and end and end >= start:
-            intervals.append((start, end))
+            spans.append((start, end, _fte_weight(entry)))
 
-    if not intervals:
+    if not spans:
         return 0.0
 
-    intervals.sort()
-    merged = [list(intervals[0])]
-    for start, end in intervals[1:]:
-        if start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
+    earliest = min(s for s, _, _ in spans)
+    latest = max(e for _, e, _ in spans)
 
-    total_days = sum((end - start).days for start, end in merged)
-    return round(total_days / 365.25, 1)
+    total_months = 0.0
+    year, month = earliest.year, earliest.month
+    while (year, month) <= (latest.year, latest.month):
+        # Credit this month at the weight of the best role covering it.
+        best = 0.0
+        for start, end, weight in spans:
+            if (start.year, start.month) <= (year, month) <= (end.year, end.month):
+                best = max(best, weight)
+        total_months += best
+        month += 1
+        if month > 12:
+            year, month = year + 1, 1
+
+    return round(total_months / 12, 1)
 
 
 def _compute_experience_durations(result: dict) -> dict:
@@ -294,7 +330,9 @@ def extract_resume(resume_text: str) -> dict:
         resume_text = resume_text[:RESUME_MAX_CHARS]
 
     prompt = get_resume_prompt(resume_text)
-    _res = call_llm(prompt)
+    # Extraction runs on the provider's strongest configured model: every
+    # score downstream is only as good as this JSON.
+    _res = call_llm(prompt, model=state.get_extraction_model())
     response = _res.text if (_res and _res.text) else None
     result = parse_json_response(response)
 

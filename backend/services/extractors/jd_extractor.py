@@ -8,6 +8,7 @@ Includes light post-processing to normalize all string values to lowercase.
 
 from services.prompts import get_jd_prompt
 from core.config import JD_MAX_CHARS
+from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm, parse_json_response
 
@@ -126,7 +127,9 @@ def extract_jd(jd_text: str) -> dict:
         jd_text = jd_text[:JD_MAX_CHARS]
 
     prompt = get_jd_prompt(jd_text)
-    _res = call_llm(prompt)
+    # Extraction runs on the provider's strongest configured model: every
+    # score downstream is only as good as this JSON.
+    _res = call_llm(prompt, model=state.get_extraction_model())
     response = _res.text if (_res and _res.text) else None
     result = parse_json_response(response)
 

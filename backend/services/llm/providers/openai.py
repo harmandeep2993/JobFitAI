@@ -59,6 +59,12 @@ def check() -> bool:
         return False
 
 
+def _is_reasoning_model(model: str) -> bool:
+    """True for OpenAI reasoning models, which take different request params."""
+    m = (model or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
 def call(prompt, model: str | None = None, json_mode: bool = True):
     """
     Send prompt to OpenAI and return response.
@@ -80,9 +86,17 @@ def call(prompt, model: str | None = None, json_mode: bool = True):
     payload = {
         "model": use_model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": LLM_TEMPERATURE,
-        "max_tokens": LLM_MAX_OUTPUT_TOKENS,
     }
+
+    # The reasoning-model family (gpt-5*, o1*, o3*) takes different parameters:
+    # it rejects max_tokens in favour of max_completion_tokens, and only accepts
+    # the default temperature. Sending the chat-model params returns a 400.
+    if _is_reasoning_model(use_model):
+        payload["max_completion_tokens"] = LLM_MAX_OUTPUT_TOKENS
+    else:
+        payload["temperature"] = LLM_TEMPERATURE
+        payload["max_tokens"] = LLM_MAX_OUTPUT_TOKENS
+
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     headers = {

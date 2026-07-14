@@ -190,7 +190,9 @@ def check_llm() -> bool:
     return provider.check()
 
 
-def call_llm(prompt: str, json_mode: bool = True) -> "LLMResult | None":
+def call_llm(
+    prompt: str, json_mode: bool = True, model: str | None = None
+) -> "LLMResult | None":
     """
     Send prompt to the active LLM provider, with retry-backoff and Groq fallback.
 
@@ -218,6 +220,9 @@ def call_llm(prompt: str, json_mode: bool = True) -> "LLMResult | None":
             Every current caller parses JSON; pass False for free-text output.
             JSON mode requires an OBJECT root - prompts must not ask for a
             bare array.
+        model (str | None): Override the active model for this call. Used by the
+            extractors, which run on a stronger model than the rest of the
+            pipeline. The Groq fallback always uses its own model.
 
     Returns:
         LLMResult | None: Typed result. Check result.degraded and result.text
@@ -225,7 +230,7 @@ def call_llm(prompt: str, json_mode: bool = True) -> "LLMResult | None":
     """
     provider = _get_provider()
     provider_name = state.get_provider()
-    model = state.get_model()
+    model = model or state.get_model()
 
     logger.debug(
         "Calling %s (%s) - prompt %d chars",

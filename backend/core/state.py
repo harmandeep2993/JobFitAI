@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from core import database
 from core.config import PROVIDER_CONFIGS
 from core.logger import get_logger
+from services.llm.providers import anthropic as _anthropic_p
 from services.llm.providers import groq as _groq_p
 from services.llm.providers import openai as _openai_p
 
@@ -28,7 +29,7 @@ logger = get_logger(__name__)
 sched_last_ref: dict[str, float] = {}
 
 # Providers the router has a working path for.
-SUPPORTED_PROVIDERS = ["openai", "groq", "ollama"]
+SUPPORTED_PROVIDERS = ["openai", "anthropic", "groq", "ollama"]
 
 # Default provider used until changed at runtime.
 # OpenAI gpt-4o-mini has far higher rate limits than Groq's free tier
@@ -263,6 +264,7 @@ def provider_catalog() -> list[dict]:
     """
     _meta = {
         "openai": {"needs_key": True, "mod": _openai_p},
+        "anthropic": {"needs_key": True, "mod": _anthropic_p},
         "groq": {"needs_key": True, "mod": _groq_p},
         "ollama": {"needs_key": False, "mod": None},
     }

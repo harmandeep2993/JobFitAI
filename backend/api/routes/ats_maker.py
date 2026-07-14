@@ -6,6 +6,9 @@
 import io
 
 from docx import Document
+from docx.enum.section import WD_SECTION
+from docx.enum.text import WD_BREAK
+from docx.oxml.ns import qn
 from docx.shared import Pt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.concurrency import run_in_threadpool
@@ -30,6 +33,9 @@ _DOCX_BODY_PT = 11
 
 # The candidate's name leads the document and should read as the title.
 _DOCX_NAME_PT = 16
+
+# Gap between columns in twips (1/20 pt). 432 = 0.3 inch.
+_COLUMN_GAP_TWIPS = 432
 
 
 def _resolve_resume_text(user_id: str, resume_id: str, tmp: str) -> str:
@@ -114,7 +120,46 @@ async def api_ats_optimise(
     return JSONResponse({"ok": True, **result})
 
 
-def _build_docx(parsed: dict) -> bytes:
+def _set_column_count(section, count: int) -> None:
+    """Set a section's column count via the raw sectPr XML.
+
+    python-docx has no API for this, but the underlying w:cols element does. This
+    is how you get a two-column resume that ATS parsers can still read: Word
+    columns are a RENDERING instruction, so the paragraphs stay in linear order
+    in the XML and text extraction walks them top to bottom. A table, by
+    contrast, builds a grid that parsers read cell by cell - which is exactly how
+    two-column resumes end up with the candidate's job titles interleaved with
+    their skills, or dropped entirely.
+    """
+    cols = section._sectPr.xpath("./w:cols")[0]
+    cols.set(qn("w:num"), str(count))
+    cols.set(qn("w:space"), str(_COLUMN_GAP_TWIPS))
+
+
+def _add_section_heading(doc, text: str) -> None:
+    """Standard ATS heading - the exact words parsers look for."""
+    doc.add_heading(text, level=1)
+
+
+def _add_experience(doc, experience: list) -> None:
+    for job in experience:
+        header = " | ".join(
+            p for p in [job.get("title"), job.get("company"), job.get("dates")] if p
+        )
+        p = doc.add_paragraph()
+        p.add_run(header).bold = True
+        for b in job.get("bullets") or []:
+            doc.add_paragraph(b, style="List Bullet")
+
+
+def _add_education(doc, education: list) -> None:
+    for edu in education:
+        line = " - ".join(p for p in [edu.get("degree"), edu.get("institution")] if p)
+        year = edu.get("year")
+        doc.add_paragraph(f"{line} ({year})" if year else line)
+
+
+def _build_docx(parsed: dict, layout: str = "single") -> bytes:
     """Render the optimised-resume JSON into a sendable, ATS-friendly DOCX.
 
     Single column, standard headings, no tables or text boxes - the layouts that
@@ -154,35 +199,53 @@ def _build_docx(parsed: dict) -> bytes:
 
     summary = (parsed.get("summary") or "").strip()
     if summary:
-        doc.add_heading("Summary", level=1)
+        _add_section_heading(doc, "Summary")
         doc.add_paragraph(summary)
 
     experience = parsed.get("experience") or []
-    if experience:
-        doc.add_heading("Work Experience", level=1)
-        for job in experience:
-            header = " | ".join(
-                p for p in [job.get("title"), job.get("company"), job.get("dates")] if p
-            )
-            p = doc.add_paragraph()
-            p.add_run(header).bold = True
-            for b in job.get("bullets") or []:
-                doc.add_paragraph(b, style="List Bullet")
-
     skills = parsed.get("skills") or []
-    if skills:
-        doc.add_heading("Skills", level=1)
-        doc.add_paragraph(", ".join(skills))
-
     education = parsed.get("education") or []
-    if education:
-        doc.add_heading("Education", level=1)
-        for edu in education:
-            line = " - ".join(
-                p for p in [edu.get("degree"), edu.get("institution")] if p
-            )
-            year = edu.get("year")
-            doc.add_paragraph(f"{line} ({year})" if year else line)
+
+    if layout == "two_column":
+        # The header and summary stay full width (a recruiter's eye and an ATS
+        # both want the name and contact block unambiguous). Everything below
+        # runs in a two-column band.
+        #
+        # Reading order is what makes this safe: the paragraphs are emitted
+        # sidebar-first, then a COLUMN break, then the main content. Word renders
+        # that as two columns; a text extractor walks the same paragraphs in the
+        # same order and gets Skills, Education, then Work Experience - each
+        # section intact and under its own standard heading.
+        body = doc.add_section(WD_SECTION.CONTINUOUS)
+        _set_column_count(body, 2)
+
+        if skills:
+            _add_section_heading(doc, "Skills")
+            for skill in skills:
+                doc.add_paragraph(skill, style="List Bullet")
+
+        if education:
+            _add_section_heading(doc, "Education")
+            _add_education(doc, education)
+
+        # Push the main content into the second column.
+        doc.add_paragraph().add_run().add_break(WD_BREAK.COLUMN)
+
+        if experience:
+            _add_section_heading(doc, "Work Experience")
+            _add_experience(doc, experience)
+    else:
+        if experience:
+            _add_section_heading(doc, "Work Experience")
+            _add_experience(doc, experience)
+
+        if skills:
+            _add_section_heading(doc, "Skills")
+            doc.add_paragraph(", ".join(skills))
+
+        if education:
+            _add_section_heading(doc, "Education")
+            _add_education(doc, education)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -198,7 +261,11 @@ async def api_ats_docx(
     if not body.resume:
         raise HTTPException(status_code=400, detail="resume_required")
 
-    data = await run_in_threadpool(_build_docx, body.resume)
+    layout = (body.layout or "single").strip().lower()
+    if layout not in ("single", "two_column"):
+        raise HTTPException(status_code=400, detail="invalid_layout")
+
+    data = await run_in_threadpool(_build_docx, body.resume, layout)
     return StreamingResponse(
         iter([data]),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

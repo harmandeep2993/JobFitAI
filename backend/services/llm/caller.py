@@ -170,6 +170,12 @@ def _get_provider():
         logger.debug("Using OpenAI provider")
         return openai
 
+    if name == "anthropic":
+        from services.llm.providers import anthropic
+
+        logger.debug("Using Anthropic provider")
+        return anthropic
+
     if name == "groq":
         from services.llm.providers import groq
 

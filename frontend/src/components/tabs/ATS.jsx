@@ -121,14 +121,19 @@ export default function ATS() {
     } finally { setLoading('') }
   }
 
-  async function downloadDocx() {
+  async function downloadDocx(layout = 'single') {
     if (!optimResult?.resume) return
-    const res = await apiFetch('/api/ats/docx', { method: 'POST', body: JSON.stringify({ resume: optimResult.resume }) })
+    const res = await apiFetch('/api/ats/docx', {
+      method: 'POST',
+      body: JSON.stringify({ resume: optimResult.resume, layout }),
+    })
     if (!res?.ok) { toast('Download failed', 'error'); return }
     const blob = await res.blob()
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = 'ats_optimised_resume.docx'
+    a.download = layout === 'two_column'
+      ? 'resume_two_column.docx'
+      : 'resume_ats_optimised.docx'
     a.click()
     URL.revokeObjectURL(a.href)
   }
@@ -298,7 +303,14 @@ export default function ATS() {
               <SectionLabel>Optimised Resume</SectionLabel>
               <div className="flex gap-2">
                 <button onClick={copyText} className="btn-secondary h-7 px-3 text-[12.5px]">Copy text</button>
-                <button onClick={downloadDocx} className="btn-primary h-7 px-3 text-[12.5px]">Download DOCX</button>
+                <button onClick={() => downloadDocx('two_column')} className="btn-secondary h-7 px-3 text-[12.5px]"
+                  title="Two columns via Word column layout - never a table, so ATS still reads it in order">
+                  Two-column DOCX
+                </button>
+                <button onClick={() => downloadDocx('single')} className="btn-primary h-7 px-3 text-[12.5px]"
+                  title="Single column - the safest layout for any ATS">
+                  Download DOCX
+                </button>
               </div>
             </div>
 

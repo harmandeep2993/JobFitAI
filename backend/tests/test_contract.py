@@ -245,6 +245,58 @@ def test_ats_docx_includes_contact_header(client, auth):
     assert "linkedin.com/in/jane" in text
 
 
+def test_ats_two_column_docx_uses_no_tables_and_reads_in_order(client, auth):
+    """Two columns via Word column layout, never a table.
+
+    A table builds a grid that ATS parsers read cell by cell, which is how
+    two-column resumes end up scrambled. Word columns are a rendering hint, so
+    the paragraphs stay in linear order and text extraction still works.
+    """
+    import io as _io
+
+    from docx import Document
+
+    resume = {
+        "contact": {"name": "Jane Doe", "email": "jane@example.com"},
+        "summary": "Data analyst.",
+        "skills": ["Python", "SQL"],
+        "experience": [
+            {
+                "title": "Data Analyst",
+                "company": "Acme GmbH",
+                "dates": "2021-2024",
+                "bullets": ["Built dashboards"],
+            }
+        ],
+        "education": [{"degree": "BSc", "institution": "TU Berlin", "year": "2020"}],
+    }
+    r = client.post(
+        "/api/ats/docx", headers=auth, json={"resume": resume, "layout": "two_column"}
+    )
+    assert r.status_code == 200
+
+    doc = Document(_io.BytesIO(r.content))
+    assert len(doc.tables) == 0, "two-column layout must not use a table"
+
+    lines = [p.text for p in doc.paragraphs if p.text.strip()]
+    text = "\n".join(lines)
+    # Contact survives, and every section is present under a standard heading
+    assert "Jane Doe" in text
+    for heading in ("Summary", "Skills", "Education", "Work Experience"):
+        assert heading in lines, f"missing ATS heading: {heading}"
+
+    # Reading order must stay linear: sidebar content, then the main column
+    assert lines.index("Skills") < lines.index("Work Experience")
+    assert lines.index("Data Analyst | Acme GmbH | 2021-2024") > lines.index(
+        "Work Experience"
+    )
+
+    r = client.post(
+        "/api/ats/docx", headers=auth, json={"resume": resume, "layout": "nonsense"}
+    )
+    assert r.status_code == 400
+
+
 def test_ats_docx_contract(client, auth):
     r = client.post(
         "/api/ats/docx",

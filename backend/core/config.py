@@ -82,6 +82,7 @@ JD_MAX_CHARS = _llm["jd_max_input_chars"]
 
 # Provider configs
 OPENAI_CONFIG = config["openai_provider"]
+ANTHROPIC_CONFIG = config.get("anthropic_provider", {})
 GROQ_CONFIG = config["groq_provider"]
 GEMINI_CONFIG = config["gemini_provider"]
 HUGGINGFACE_CONFIG = config["huggingface_provider"]
@@ -90,6 +91,7 @@ OLLAMA_CONFIG = config["ollama_provider"]
 # All providers indexed by name
 PROVIDER_CONFIGS = {
     "openai": OPENAI_CONFIG,
+    "anthropic": ANTHROPIC_CONFIG,
     "groq": GROQ_CONFIG,
     "gemini": GEMINI_CONFIG,
     "huggingface": HUGGINGFACE_CONFIG,

@@ -222,8 +222,34 @@ There are no Supabase, Stripe, MongoDB, or Firebase credentials in this project.
 1. Generate a fresh `JWT_SECRET` (`python -c "import secrets; print(secrets.token_hex(32))"`).
    Without a fixed value, every restart invalidates all sessions; with `APP_ENV=production`
    the server refuses to boot without it.
-2. Set `ALLOWED_ORIGINS` to your real domain. The default allows localhost only.
+2. Set `ALLOWED_ORIGINS` to your real `https://` domain. The default allows localhost only,
+   and in production the server refuses to boot on `*` or any `http://` origin.
 3. Set `INVITE_CODE` to keep registration closed during beta.
+
+---
+
+## Data in Transit
+
+Resumes and passwords must never cross the network in clear text. Protection is split
+between the platform and the app:
+
+**The platform terminates TLS.** The app cannot encrypt the wire itself - your host
+(Fly, Railway, Render, Cloudflare, or an nginx/Caddy reverse proxy) must serve HTTPS with
+a valid certificate. Run uvicorn behind it with `--proxy-headers --forwarded-allow-ips=*`
+so the app can see the original scheme.
+
+**The app refuses to be used insecurely.** With `APP_ENV=production`:
+
+| Protection | Effect |
+|------------|--------|
+| `HTTPSRedirectMiddleware` | Any plain-HTTP request is redirected before a body is read |
+| `Strict-Transport-Security` (1 year, includeSubDomains) | Browsers refuse `http://` for this domain entirely, even if a user types it |
+| `Content-Security-Policy` | `script-src 'self'` - the JWT lives in localStorage, so blocking injected scripts is the main defence against token theft; `connect-src 'self'` stops any exfiltration endpoint |
+| `secure` + `httpOnly` + `sameSite` on session cookies | Cookie is never sent over plain HTTP |
+| CORS allowlist | Boot fails on `*` or `http://` origins - a wildcard with credentials would let any site read authenticated responses |
+| Body size cap, per-IP and per-user rate limits | Limits abuse of the exposed surface |
+
+All outbound calls (OpenAI, Groq, Adzuna, Arbeitnow, Bundesagentur) already use HTTPS.
 
 **Rotate any key that was ever pasted into a file, a commit, a screenshot, or a chat.**
 Git history is permanent: deleting a secret from the current code does not remove it from

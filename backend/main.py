@@ -25,6 +25,7 @@ from typing import Set
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -58,6 +59,10 @@ _sched_last_ref = session.sched_last_ref
 
 app = FastAPI(title="JobsFitAI")
 
+# Gates every production-only hardening below: HTTPS redirect, HSTS, and the
+# secure flag on the session cookie. Defined before any middleware reads it.
+_IS_PRODUCTION = os.getenv("APP_ENV", "").strip().lower() == "production"
+
 # Origins default to the local dev servers; production sets ALLOWED_ORIGINS
 # in .env as a comma-separated list of real domains. Wildcard origins with
 # credentials enabled would let any site ride authenticated sessions.
@@ -67,6 +72,19 @@ _ALLOWED_ORIGINS = [
     for o in os.getenv("ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
     if o.strip()
 ]
+
+# A wildcard here with allow_credentials would let any website on the internet
+# issue authenticated requests as a logged-in user and read the response. Refuse
+# to boot rather than serve that in production.
+if _IS_PRODUCTION:
+    if "*" in _ALLOWED_ORIGINS:
+        logger.error("ALLOWED_ORIGINS must not be '*' in production")
+        sys.exit(1)
+    insecure = [o for o in _ALLOWED_ORIGINS if o.startswith("http://")]
+    if insecure:
+        logger.error("ALLOWED_ORIGINS must use https:// in production: %s", insecure)
+        sys.exit(1)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_ALLOWED_ORIGINS,
@@ -87,11 +105,49 @@ if _DIST.exists():
     )
 
 
+# === Transport security: HTTPS enforcement ===
+# Data in transit is protected by TLS, which is terminated by the reverse proxy
+# or hosting platform - the app cannot encrypt the wire itself. What the app CAN
+# do is refuse to serve anything over plain HTTP in production and instruct
+# browsers never to try again (HSTS), so a resume or password is never sent in
+# clear text even if a user or a link starts on http://.
+#
+# The proxy tells us the original scheme via X-Forwarded-Proto. Run uvicorn with
+# --proxy-headers (and --forwarded-allow-ips) so this is trustworthy.
+if _IS_PRODUCTION:
+    app.add_middleware(HTTPSRedirectMiddleware)
+
+
 # === Body size cap + security headers middleware ===
 
 # Reject request bodies larger than the biggest legitimate payload (a resume
 # upload plus multipart overhead) before reading them into memory.
 _MAX_BODY_BYTES = (MAX_FILE_SIZE_MB + 2) * 1024 * 1024
+
+# Content Security Policy. The JWT lives in localStorage, so a single injected
+# script could exfiltrate it: locking script-src to our own origin is the main
+# defence against that. Google Fonts is the only third party the page loads.
+_CSP = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        # Tailwind and the React style props need inline styles; no inline scripts.
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' data: https://fonts.gstatic.com",
+        "img-src 'self' data: blob:",
+        # Resume previews are rendered from blob: URLs in an iframe.
+        "frame-src 'self' blob:",
+        # The API is same-origin; no other host may receive fetch/XHR traffic.
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'self'",
+    ]
+)
+
+# One year, and eligible for browser preload lists.
+_HSTS = "max-age=31536000; includeSubDomains"
 
 
 @app.middleware("http")
@@ -107,6 +163,14 @@ async def _body_limit_and_security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    response.headers.setdefault(
+        "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+    )
+    # Only meaningful over HTTPS, and sending it in dev would pin localhost to
+    # https:// in the developer's browser for a year.
+    if _IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", _HSTS)
     return response
 
 
@@ -142,8 +206,6 @@ async def _request_logger(request: Request, call_next):
 
 
 # === Auth middleware (opt-in: only active when APP_PASSWORD is set in .env) ===
-
-_IS_PRODUCTION = os.getenv("APP_ENV", "").strip().lower() == "production"
 
 _AUTH_ENABLED = bool(os.getenv("APP_PASSWORD", "").strip())
 _AUTH_USER = os.getenv("APP_USERNAME", "admin").strip()

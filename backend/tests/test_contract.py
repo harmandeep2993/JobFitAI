@@ -631,3 +631,15 @@ def test_security_headers_present(client, auth):
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("x-frame-options") == "SAMEORIGIN"
     assert r.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    # CSP locks scripts to our own origin: the JWT lives in localStorage, so an
+    # injected script is the realistic path to stealing it.
+    csp = r.headers.get("content-security-policy", "")
+    assert "script-src 'self'" in csp
+    assert "connect-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    # Fonts are the only third party the page may reach
+    assert "https://fonts.gstatic.com" in csp
+
+    # HSTS must NOT be sent in dev - it would pin localhost to https for a year
+    assert "strict-transport-security" not in r.headers

@@ -143,6 +143,8 @@ async def _request_logger(request: Request, call_next):
 
 # === Auth middleware (opt-in: only active when APP_PASSWORD is set in .env) ===
 
+_IS_PRODUCTION = os.getenv("APP_ENV", "").strip().lower() == "production"
+
 _AUTH_ENABLED = bool(os.getenv("APP_PASSWORD", "").strip())
 _AUTH_USER = os.getenv("APP_USERNAME", "admin").strip()
 _AUTH_PASS = os.getenv("APP_PASSWORD", "").strip()
@@ -213,10 +215,13 @@ async def login_submit(request: Request):
     if not ok:
         return RedirectResponse("/login?error=1", status_code=302)
     resp = RedirectResponse("/", status_code=302)
+    # secure=True outside local dev: without it the session cookie is sent
+    # over plain HTTP and can be captured in transit.
     resp.set_cookie(
         _SESSION_COOKIE,
         _make_token(),
         httponly=True,
+        secure=_IS_PRODUCTION,
         samesite="lax",
         max_age=60 * 60 * 24 * 30,
     )

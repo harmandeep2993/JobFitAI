@@ -52,11 +52,12 @@ def get_resume_prompt(resume_text: str) -> str:
 
     RULES:
     1. Return ONLY valid minified JSON. Use "" / [] / 0 for anything absent - never output a <hint> or an empty template object.
-    2. Resume may be in any language - return ALL values in English.
-    3. skills: scan EVERY section (experience bullets, projects, summary, certifications, publications) - every technology, tool, methodology, and soft skill mentioned anywhere goes in skills[]. Use canonical lowercase names: expand abbreviations (k8s -> kubernetes, js -> javascript, ml -> machine learning, nlp -> natural language processing, gcp -> google cloud, postgres -> postgresql) but keep standard acronyms (aws, sql, etl, sap). No duplicate spellings.
-    4. experience_entries: ALL roles count - jobs, internships, working student, freelance, research positions, teaching, volunteer work.
-    5. Dates: normalize to MM/YYYY (or YYYY when no month is shown); ongoing roles get end_date "present". Never invent dates. Always set duration_years and meta.total_experience_years to 0 - they are computed after extraction.
-    6. Academic profiles: research positions belong in experience_entries, papers in publications[], thesis title in education. Vocational profiles: an Ausbildung/apprenticeship goes in education AND its work placement as an experience entry with employment_type "apprenticeship".
+    2. NEVER extract contact details. The candidate's name, email address, phone number, postal address, date of birth, and personal URLs must not appear anywhere in the output - not in candidate, not inside a bullet, not in a project description. Scoring never needs them.
+    3. Resume may be in any language - return ALL values in English.
+    4. skills: scan EVERY section (experience bullets, projects, summary, certifications, publications) - every technology, tool, methodology, and soft skill mentioned anywhere goes in skills[]. Use canonical lowercase names: expand abbreviations (k8s -> kubernetes, js -> javascript, ml -> machine learning, nlp -> natural language processing, gcp -> google cloud, postgres -> postgresql) but keep standard acronyms (aws, sql, etl, sap). No duplicate spellings.
+    5. experience_entries: ALL roles count - jobs, internships, working student, freelance, research positions, teaching, volunteer work.
+    6. Dates: normalize to MM/YYYY (or YYYY when no month is shown); ongoing roles get end_date "present". Never invent dates. Always set duration_years and meta.total_experience_years to 0 - they are computed after extraction.
+    7. Academic profiles: research positions belong in experience_entries, papers in publications[], thesis title in education. Vocational profiles: an Ausbildung/apprenticeship goes in education AND its work placement as an experience entry with employment_type "apprenticeship".
 
     SCHEMA:
     {schema_text}

@@ -4,16 +4,78 @@
  * Job search targets and the scheduler live in the Job Matches tab.
  */
 import { useState, useEffect } from 'react'
-import { apiFetch } from '../../lib/auth.js'
+import { apiFetch, clearToken } from '../../lib/auth.js'
 import { errMsg } from '../../lib/errors.js'
 import { useToast } from '../Toast.jsx'
 import { PageHeader, CardSection, FieldLabel, PageSpinner } from '../ui.jsx'
+
+// === Irreversible account erasure (GDPR right to erasure) ===
+function DeleteAccountModal({ onClose }) {
+  const toast = useToast()
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(e) {
+    e.preventDefault()
+    if (confirm !== 'DELETE') { toast('Type DELETE to confirm', 'warn'); return }
+    setBusy(true)
+    try {
+      const res = await apiFetch('/api/auth/account', {
+        method: 'DELETE',
+        body: JSON.stringify({ password }),
+      })
+      const data = await res?.json().catch(() => ({}))
+      if (!res?.ok || !data.ok) { toast(errMsg(data, 'Could not delete the account'), 'error'); return }
+      clearToken()
+      window.location.href = '/'
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }} onClick={onClose}>
+      <form onSubmit={submit} className="w-full max-w-md rounded-xl p-5 space-y-4"
+        style={{ background: 'rgb(var(--surface))' }} onClick={e => e.stopPropagation()}>
+        <div>
+          <div className="text-[14px] font-semibold" style={{ color: 'rgb(var(--red))' }}>
+            Delete your account
+          </div>
+          <p className="text-[12.5px] text-t2 mt-1.5 leading-relaxed">
+            This permanently erases your account, every stored resume file, all analyses,
+            job matches, and history. It cannot be undone.
+          </p>
+        </div>
+        <input
+          type="password" value={password} onChange={e => setPassword(e.target.value)}
+          placeholder="Confirm your password" autoComplete="current-password" required
+          className="input-base"
+        />
+        <input
+          type="text" value={confirm} onChange={e => setConfirm(e.target.value)}
+          placeholder='Type DELETE to confirm' required className="input-base"
+        />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn-secondary px-4">Cancel</button>
+          <button type="submit" disabled={busy || !password || confirm !== 'DELETE'}
+            className="px-5 h-9 text-[13px] font-medium rounded-sm border transition-colors disabled:opacity-40"
+            style={{ background: 'rgba(var(--red) / 0.08)', borderColor: 'rgba(var(--red) / 0.35)', color: 'rgb(var(--red))' }}>
+            {busy ? 'Deleting...' : 'Delete permanently'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
 
 export default function Settings() {
   const toast = useToast()
   const [llm, setLlm] = useState(null)
   const [me, setMe] = useState(null)
   const [saving, setSaving] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   useEffect(() => {
     apiFetch('/api/llm-settings').then(r => r?.json()).then(d => setLlm(d))
@@ -108,6 +170,22 @@ export default function Settings() {
                 {saving === 'password' ? 'Changing...' : 'Change password'}
               </button>
             </form>
+
+            <div className="pt-3" style={{ borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+              <FieldLabel>Delete account</FieldLabel>
+              <p className="text-[12.5px] text-t2 mb-2.5 leading-relaxed">
+                Permanently erase your account, resume files, analyses, and job history.
+                This cannot be undone.
+              </p>
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="h-8 px-4 text-[12.5px] font-medium rounded-sm border transition-colors"
+                style={{ borderColor: 'rgba(var(--red) / 0.35)', color: 'rgb(var(--red))' }}
+              >
+                Delete my account
+              </button>
+            </div>
           </div>
         </CardSection>
       )}
@@ -146,6 +224,8 @@ export default function Settings() {
           </CardSection>
         </form>
       )}
+
+      {confirmDelete && <DeleteAccountModal onClose={() => setConfirmDelete(false)} />}
     </div>
   )
 }

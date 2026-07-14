@@ -19,7 +19,7 @@ const MESSAGES = {
   no_resume: 'Load a resume first: go to Resumes and click "Use for matching".',
   invalid_credentials: 'Wrong email or password.',
   email_already_registered: 'An account with this email already exists - log in instead.',
-  wrong_current_password: 'Your current password is incorrect.',
+  wrong_current_password: 'Your password is incorrect.',
   too_many_attempts_try_again_later: 'Too many attempts - wait a minute and try again.',
   admin_required: 'Only the admin can change this setting.',
   invalid_or_expired_token: 'Your session expired - please log in again.',

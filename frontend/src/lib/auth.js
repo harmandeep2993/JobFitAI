@@ -12,15 +12,9 @@ export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
-export function getUser() {
-  const token = getToken()
-  if (!token) return null
-  try {
-    return JSON.parse(atob(token.split('.')[1]))
-  } catch {
-    return null
-  }
-}
+// No getUser() decoding the JWT: the token lives in localStorage, which any
+// script on the page can read, so it carries the user id only. Components that
+// need the email fetch it from GET /api/auth/me over an authenticated request.
 
 export function isAuthed() {
   return Boolean(getToken())

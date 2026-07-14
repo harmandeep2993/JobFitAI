@@ -479,6 +479,72 @@ def test_spa_catch_all_serves_client_routes(client):
     assert r.json()["error"] == "not_found"
 
 
+def test_delete_account_erases_all_user_data(client):
+    """GDPR erasure: wrong password is rejected; deletion removes every row."""
+    from core import database as db
+
+    email = "erase-me@example.com"
+    r = client.post(
+        "/api/auth/register", json={"email": email, "password": "testpass123"}
+    )
+    assert r.status_code == 201
+    body = r.json()
+    h = {"Authorization": f"Bearer {body['token']}"}
+    user_id = body["user_id"]
+
+    # Give the account some data to erase
+    client.post(
+        "/api/resumes/upload",
+        headers=h,
+        files={"file": ("cv.txt", RESUME_TEXT.encode(), "text/plain")},
+        data={"slot": "0"},
+    )
+    client.post(
+        "/api/match/filters", headers=h, json={"target_titles": ["ml engineer"]}
+    )
+
+    # A stolen token alone must not be enough to destroy the account
+    r = client.request(
+        "DELETE", "/api/auth/account", headers=h, json={"password": "wrong-password"}
+    )
+    assert r.status_code == 401
+
+    r = client.request(
+        "DELETE", "/api/auth/account", headers=h, json={"password": "testpass123"}
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+
+    # Every per-user table is empty, and the account no longer authenticates
+    with db.connect() as conn:
+        for table in ("users", "resumes", "analyses", "matches", "user_settings"):
+            col = "id" if table == "users" else "user_id"
+            rows = conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE {col} = ?", (user_id,)
+            ).fetchone()["n"]
+            assert rows == 0, f"{table} still holds data after erasure"
+
+    assert client.get("/api/auth/me", headers=h).status_code == 401
+
+
+def test_jwt_carries_no_personal_data(client):
+    """The token sits in localStorage, so it must not contain the email."""
+    import json as _json
+    import base64
+
+    r = client.post(
+        "/api/auth/register",
+        json={"email": "claims@example.com", "password": "testpass123"},
+    )
+    token = r.json()["token"]
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    claims = _json.loads(base64.urlsafe_b64decode(payload_b64))
+
+    assert "sub" in claims
+    assert "email" not in claims, "email must not be a JWT claim"
+    assert "claims@example.com" not in _json.dumps(claims)
+
+
 def test_match_stop_contract(client, auth):
     """Stop endpoint responds ok with stopped=false when no run is active."""
     r = client.post("/api/match/stop", headers=auth)

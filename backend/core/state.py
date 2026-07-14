@@ -177,6 +177,17 @@ def has_resume(user_id: str) -> bool:
     return get_resume(user_id) is not None
 
 
+def clear_user(user_id: str) -> None:
+    """Drop this user's in-memory resume state (used on account erasure).
+
+    Only clears RAM - the caller deletes the persisted rows. Without this, the
+    extracted resume JSON would survive account deletion until restart.
+    """
+    _resume.pop(user_id, None)
+    _resume_loaded.discard(user_id)
+    sched_last_ref.pop(user_id, None)
+
+
 def _flatten_skills(skills) -> list:
     if isinstance(skills, list):
         return [s for s in skills if isinstance(s, str)]

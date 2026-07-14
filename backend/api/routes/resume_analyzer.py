@@ -16,7 +16,6 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from core import uploads
 from core.config import JD_MAX_CHARS, MAX_FILE_SIZE_MB, SUPPORTED_EXTENSIONS, WEIGHTS
-from services.matcher.scores.skills import PARTIAL_CREDIT
 from core.logger import get_logger
 from services.extractors import extract_all
 from services.matcher.engine import match
@@ -36,7 +35,7 @@ ALLOWED_EXTENSIONS: Set[str] = SUPPORTED_EXTENSIONS
 MAX_FILE_MB: int = MAX_FILE_SIZE_MB
 
 # Bump when match() scoring semantics change - keys the analysis cache.
-_SCORING_VERSION = "v3"
+_SCORING_VERSION = "v4"
 
 _PREVIEW_TYPES = {
     ".pdf": "application/pdf",
@@ -226,8 +225,7 @@ def _build_skill_impact(results: dict) -> list[dict]:
         return []
 
     matched = len(results.get("matched_required") or [])
-    partial = len(results.get("partial_required") or [])
-    total = matched + partial + len(missing)
+    total = matched + len(missing)
     if total == 0:
         return []
 
@@ -236,7 +234,7 @@ def _build_skill_impact(results: dict) -> list[dict]:
     current = results.get("overall_score", 0)
 
     # Adding one missing skill moves it from missing to matched.
-    improved_req = (matched + 1 + PARTIAL_CREDIT * partial) / total * 100
+    improved_req = (matched + 1) / total * 100
     delta = round(
         (improved_req - req_score) * WEIGHTS.get("required_skills", 0) / total_weight, 1
     )

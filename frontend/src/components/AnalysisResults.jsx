@@ -253,7 +253,6 @@ const EVIDENCE_LABEL = {
   listed:        { text: 'In your skills list', kind: 'matched' },
   in_experience: { text: 'Proven in your experience', kind: 'matched' },
   similar:       { text: 'Close match in your skills', kind: 'matched' },
-  related:       { text: 'Related skill', kind: 'partial' },
   missing:       { text: 'Not found', kind: 'missing' },
 }
 
@@ -269,7 +268,7 @@ function SkillRow({ skill, info }) {
         <div className="text-[11.5px] text-t3">{meta.text}</div>
         {info?.detail && (
           <div className="text-[12px] text-t2 mt-0.5 leading-snug italic">
-            {info.how === 'related' ? `You have: ${info.detail}` : `"${info.detail}"`}
+            {info.how === 'similar' ? `You have: ${info.detail}` : `"${info.detail}"`}
           </div>
         )}
       </div>

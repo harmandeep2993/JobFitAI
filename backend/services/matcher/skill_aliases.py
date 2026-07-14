@@ -134,9 +134,11 @@ def build_evidence_lines(resume: dict) -> list[str]:
     for pub in resume.get("publications", []) or []:
         if isinstance(pub, str) and pub.strip():
             lines.append(pub.strip())
-    summary = (resume.get("summary") or "").strip()
-    if summary:
-        lines.append(summary)
+    # The summary/objective is deliberately excluded. "Searching for roles in
+    # AI/ML" is a statement of intent, not evidence of having done the work, and
+    # quoting it back as proof of a skill is both weak and embarrassing. A skill
+    # that appears only there is still found by the corpus search (so the ATS
+    # advice still fires); it just cannot be cited as experience.
     return lines
 
 

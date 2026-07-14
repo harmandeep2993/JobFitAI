@@ -202,6 +202,37 @@ and `ALLOWED_ORIGINS` restricts CORS to your real domain.
 
 ---
 
+## Secrets and Deployment Safety
+
+Every credential is server-side only and read from the environment. **The frontend reads no
+environment variables at all** - no key, public or otherwise, is bundled into the browser.
+There are no Supabase, Stripe, MongoDB, or Firebase credentials in this project.
+
+| Rule | Status |
+|------|--------|
+| No secret as a string literal anywhere in source | Verified - full-tree scan, none found |
+| `.env` gitignored and never committed | Verified - only `.env.example` is tracked |
+| Secrets absent from git history | Verified - no key pattern in any commit |
+| No secret in logs (values, URLs, connection strings) | Enforced - log lines name variables, never values |
+| No secret in any API response | Enforced - `/api/llm-settings` returns `has_key` as a boolean only |
+| API keys sent as request params, never interpolated into logged URLs | Verified |
+
+**Before deploying:**
+
+1. Generate a fresh `JWT_SECRET` (`python -c "import secrets; print(secrets.token_hex(32))"`).
+   Without a fixed value, every restart invalidates all sessions; with `APP_ENV=production`
+   the server refuses to boot without it.
+2. Set `ALLOWED_ORIGINS` to your real domain. The default allows localhost only.
+3. Set `INVITE_CODE` to keep registration closed during beta.
+
+**Rotate any key that was ever pasted into a file, a commit, a screenshot, or a chat.**
+Git history is permanent: deleting a secret from the current code does not remove it from
+earlier commits, and a leaked key stays valid until you revoke it at the provider
+(OpenAI, Groq, Adzuna, Turso). Rotation is the only fix - re-writing history is not enough
+if the repository was ever pushed or cloned.
+
+---
+
 ## API Endpoints (summary)
 
 | Group | Endpoints |

@@ -227,7 +227,9 @@ def resume_info(user_id: str) -> dict:
 def provider_catalog() -> list[dict]:
     """Return the selectable providers for the UI.
 
-    Each entry: {name, default_model, models[], needs_key, has_key, key_hint}.
+    Each entry: {name, default_model, models[], needs_key, has_key}.
+    has_key is a boolean only - no fragment of any API key is ever sent to a
+    client, not even a masked suffix.
     """
     _meta = {
         "openai": {"needs_key": True, "mod": _openai_p},
@@ -247,7 +249,6 @@ def provider_catalog() -> list[dict]:
                 "models": cfg.get("models", []),
                 "needs_key": meta.get("needs_key", False),
                 "has_key": mod.has_key() if mod else True,
-                "key_hint": mod.get_key_hint() if mod else "",
             }
         )
     return catalog

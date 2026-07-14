@@ -267,7 +267,9 @@ def init() -> None:
             except Exception as _e:
                 logger.debug("migration skipped (already applied?): %s", _e)
 
-    mode = f"Turso ({_TURSO_URL})" if _USE_TURSO else f"SQLite ({DB_PATH})"
+    # Log the backend, not the endpoint: the Turso URL identifies the live
+    # database host and does not belong in logs or crash reports.
+    mode = "Turso (cloud)" if _USE_TURSO else f"SQLite ({DB_PATH})"
     logger.info("Database ready - %s", mode)
 
 

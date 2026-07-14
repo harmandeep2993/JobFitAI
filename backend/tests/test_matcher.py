@@ -69,7 +69,7 @@ def test_evidence_corpus_finds_buried_skills():
 
 def test_required_skills_alias_and_evidence():
     jd = {"required_skills": ["Kubernetes", "Docker", "Python", "SQL"]}
-    score, matched, partial, missing = score_required_skills(RESUME, jd)
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, jd)
     # kubernetes via alias (k8s), docker+sql via evidence bullets, python direct
     assert "kubernetes" in matched
     assert "docker" in matched
@@ -81,14 +81,14 @@ def test_required_skills_alias_and_evidence():
 
 def test_required_skills_unrelated_stays_missing():
     jd = {"required_skills": ["terraform", "react"]}
-    score, matched, partial, missing = score_required_skills(RESUME, jd)
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, jd)
     assert "react" in missing
     assert "terraform" not in matched
     assert score < 60
 
 
 def test_no_required_skills_returns_none():
-    score, matched, partial, missing = score_required_skills(RESUME, {})
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, {})
     assert score is None
     assert matched == [] and partial == [] and missing == []
 
@@ -237,10 +237,10 @@ def test_language_gate_compares_cefr_levels():
 def test_gates_never_enter_the_score(monkeypatch):
     """A failed gate warns but must not reduce the weighted score."""
     monkeypatch.setattr(
-        engine, "score_required_skills", lambda r, j: (100.0, ["python"], [], [])
+        engine, "score_required_skills", lambda r, j: (100.0, ["python"], [], [], {})
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
@@ -269,10 +269,10 @@ def test_gates_never_enter_the_score(monkeypatch):
 def test_engine_excludes_none_sections_but_keeps_real_sixty(monkeypatch):
     """None sections are excluded from the overall; a legitimate 60.0 is not."""
     monkeypatch.setattr(
-        engine, "score_required_skills", lambda r, j: (90.0, ["python"], [], [])
+        engine, "score_required_skills", lambda r, j: (90.0, ["python"], [], [], {})
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
@@ -293,10 +293,10 @@ def test_engine_excludes_none_sections_but_keeps_real_sixty(monkeypatch):
 def test_responsibilities_excluded_without_llm_judge(monkeypatch):
     """Bulk job scoring skips the LLM judge; the section is None, not zero."""
     monkeypatch.setattr(
-        engine, "score_required_skills", lambda r, j: (80.0, ["python"], [], [])
+        engine, "score_required_skills", lambda r, j: (80.0, ["python"], [], [], {})
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
@@ -349,10 +349,10 @@ def test_engine_reports_partial_lists(monkeypatch):
     monkeypatch.setattr(
         engine,
         "score_required_skills",
-        lambda r, j: (75.0, ["python"], ["tensorflow"], ["terraform"]),
+        lambda r, j: (75.0, ["python"], ["tensorflow"], ["terraform"], {}),
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)

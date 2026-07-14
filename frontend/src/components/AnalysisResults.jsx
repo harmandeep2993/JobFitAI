@@ -3,6 +3,7 @@
  * modal that reopens past analyses. Renders score ring, section breakdown,
  * keywords, strengths/gaps, and focus recommendation.
  */
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Card, CardBody, CardSection, SectionLabel, ScoreLabel } from './ui.jsx'
 
@@ -98,14 +99,6 @@ const CHIP_STYLES = {
   matched: { background: 'rgba(22,163,74,0.08)',  borderColor: 'rgba(22,163,74,0.25)',  color: '#16a34a' },
   partial: { background: 'rgba(217,119,6,0.08)',  borderColor: 'rgba(217,119,6,0.25)',  color: '#d97706' },
   missing: { background: 'rgba(220,38,38,0.08)', borderColor: 'rgba(220,38,38,0.25)', color: '#dc2626' },
-}
-
-function KeywordChip({ text, kind }) {
-  return (
-    <span className="px-2.5 py-0.5 rounded-sm text-[12px] font-medium border" style={CHIP_STYLES[kind] || CHIP_STYLES.matched}>
-      {text}
-    </span>
-  )
 }
 
 // === Hard requirement gates ===
@@ -205,6 +198,199 @@ function DutiesPanel({ duties }) {
   )
 }
 
+// === What the user is being scored against ===
+function JobContext({ job }) {
+  if (!job?.title && !job?.company) return null
+  const facts = [job.location, job.work_mode, job.employment_type, job.job_level]
+    .filter(Boolean)
+  return (
+    <div className="min-w-0">
+      <div className="text-[13.5px] font-semibold text-t1 truncate">
+        {job.title}
+        {job.company && <span className="font-normal text-t2"> · {job.company}</span>}
+      </div>
+      {facts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-1.5">
+          {facts.map(f => (
+            <span key={f} className="px-1.5 py-0.5 text-[11px] font-medium rounded-sm capitalize"
+              style={{ background: 'rgb(var(--surface-2))', color: 'rgb(var(--t2))' }}>
+              {f}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// === Skills, with proof of where each one came from ===
+const EVIDENCE_LABEL = {
+  listed:        { text: 'In your skills list', kind: 'matched' },
+  in_experience: { text: 'Proven in your experience', kind: 'matched' },
+  similar:       { text: 'Close match in your skills', kind: 'matched' },
+  related:       { text: 'Related skill', kind: 'partial' },
+  missing:       { text: 'Not found', kind: 'missing' },
+}
+
+function SkillRow({ skill, info }) {
+  const meta = EVIDENCE_LABEL[info?.how] || EVIDENCE_LABEL.missing
+  return (
+    <li className="flex items-start gap-2.5">
+      <span className="px-2 py-0.5 text-[11.5px] font-medium rounded-sm border flex-shrink-0"
+        style={CHIP_STYLES[meta.kind]}>
+        {skill}
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <div className="text-[11.5px] text-t3">{meta.text}</div>
+        {info?.detail && (
+          <div className="text-[12px] text-t2 mt-0.5 leading-snug italic">
+            {info.how === 'related' ? `You have: ${info.detail}` : `"${info.detail}"`}
+          </div>
+        )}
+      </div>
+    </li>
+  )
+}
+
+function SkillsPanel({ title, skills, evidence, hint }) {
+  const all = [...(skills.matched || []), ...(skills.partial || []), ...(skills.missing || [])]
+  if (all.length === 0) return null
+  const covered = (skills.matched || []).length
+  return (
+    <CardSection
+      title={title}
+      action={
+        <span className="text-[11px] font-bold" style={{ color: covered === all.length ? '#16a34a' : 'rgb(var(--t3))' }}>
+          {covered} / {all.length}
+        </span>
+      }
+    >
+      {hint && <p className="text-[12px] text-t3 mb-3">{hint}</p>}
+      <ul className="space-y-2.5">
+        {all.map(s => <SkillRow key={s} skill={s} info={evidence?.[s]} />)}
+      </ul>
+    </CardSection>
+  )
+}
+
+// === The ATS insight: skills you have but a recruiter's search cannot find ===
+function HiddenSkillsAlert({ evidence }) {
+  const hidden = Object.entries(evidence?.required || {})
+    .filter(([, v]) => v.how === 'in_experience')
+    .map(([k]) => k)
+  if (hidden.length === 0) return null
+
+  return (
+    <div className="rounded-lg border p-4"
+      style={{ background: 'rgba(99,102,241,0.05)', borderColor: 'rgba(99,102,241,0.25)' }}>
+      <div className="flex items-center gap-2 mb-2">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="rgb(var(--accent))" strokeWidth="2" strokeLinecap="round">
+          <circle cx="8" cy="8" r="6.5"/><path d="M8 5v3.5M8 11v.5"/>
+        </svg>
+        <span className="text-[13px] font-semibold" style={{ color: 'rgb(var(--accent))' }}>
+          Quick win: {hidden.length} skill{hidden.length > 1 ? 's' : ''} hidden from recruiters
+        </span>
+      </div>
+      <p className="text-[12.5px] text-t2 leading-relaxed mb-2">
+        You proved {hidden.length > 1 ? 'these' : 'this'} in your experience, but {hidden.length > 1 ? 'they are' : 'it is'} missing
+        from your Skills section - so a recruiter searching for {hidden.length > 1 ? 'them' : 'it'} will not find you.
+        Add {hidden.length > 1 ? 'them' : 'it'} verbatim.
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {hidden.map(s => (
+          <span key={s} className="px-2 py-0.5 text-[12px] font-medium rounded-sm border"
+            style={{ background: 'rgba(99,102,241,0.08)', borderColor: 'rgba(99,102,241,0.3)', color: 'rgb(var(--accent))' }}>
+            {s}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// === Prioritised action plan: what each missing skill is worth ===
+function SkillImpact({ impact }) {
+  if (!impact?.length) return null
+  return (
+    <CardSection title="What would raise your score">
+      <ul className="space-y-2">
+        {impact.slice(0, 6).map(i => (
+          <li key={i.skill} className="flex items-center gap-3">
+            <span className="px-2 py-0.5 text-[12px] font-medium rounded-sm border flex-shrink-0"
+              style={CHIP_STYLES.missing}>{i.skill}</span>
+            <span className="flex-1 h-px" style={{ background: 'rgba(var(--border) / 0.1)' }} />
+            <span className="text-[12.5px] font-semibold flex-shrink-0" style={{ color: '#16a34a' }}>
+              +{i.gain}
+            </span>
+            <span className="text-[12px] text-t3 flex-shrink-0 w-14 text-right">
+              → {i.new_score}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11.5px] text-t3 mt-3">
+        Gain if the skill were genuinely present on your resume. Never add a skill you do not have.
+      </p>
+    </CardSection>
+  )
+}
+
+// === How the number was actually built ===
+function ScoreMath({ rows }) {
+  const [open, setOpen] = useState(false)
+  if (!rows?.length) return null
+  return (
+    <Card>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-3.5 text-left"
+      >
+        <span className="text-[13px] font-semibold text-t1">How this score was calculated</span>
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="rgb(var(--t3))" strokeWidth="2"
+          strokeLinecap="round" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
+          <path d="M4 6l4 4 4-4"/>
+        </svg>
+      </button>
+      {open && (
+        <CardBody className="pt-0">
+          <table className="w-full text-[12.5px]">
+            <thead>
+              <tr className="text-t3 text-[11px] uppercase tracking-wide">
+                <th className="text-left font-semibold pb-2">Section</th>
+                <th className="text-right font-semibold pb-2">Score</th>
+                <th className="text-right font-semibold pb-2">Weight</th>
+                <th className="text-right font-semibold pb-2">Points</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.section} style={{ borderTop: '1px solid rgba(var(--border) / 0.06)' }}>
+                  <td className="py-1.5 text-t1 capitalize">{r.section.replace(/_/g, ' ')}</td>
+                  {r.excluded ? (
+                    <td colSpan={3} className="py-1.5 text-right text-t3 italic">
+                      not mentioned in this job ad - excluded
+                    </td>
+                  ) : (
+                    <>
+                      <td className="py-1.5 text-right text-t2">{Math.round(r.score)}</td>
+                      <td className="py-1.5 text-right text-t3">{Math.round(r.weight * 100)}%</td>
+                      <td className="py-1.5 text-right font-semibold text-t1">{r.points}</td>
+                    </>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-[11.5px] text-t3 mt-3 leading-relaxed">
+            Sections the job ad says nothing about carry no weight - their share is redistributed
+            across the rest, so an absent section never drags your score down.
+          </p>
+        </CardBody>
+      )}
+    </Card>
+  )
+}
+
 export function ResultsPanel({ result, delta = null, footer = null }) {
   // Sections the JD said nothing about come back as null - skip their bars
   // rather than drawing a misleading zero.
@@ -213,9 +399,14 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
       .map(([k, v]) => [k, typeof v === 'object' ? v.score : v])
       .filter(([, v]) => v !== null && v !== undefined)
   )
-  const matchedKw = result.keywords?.matched || []
-  const partialKw = result.keywords?.partial || []
-  const missingKw = result.keywords?.missing || []
+  // Prefer the per-section breakdown (it carries preferred skills too); fall
+  // back to the flat keywords list so cached results from older runs still render.
+  const requiredSkills = result.breakdown?.required_skills || {
+    matched: result.keywords?.matched || [],
+    partial: result.keywords?.partial || [],
+    missing: result.keywords?.missing || [],
+  }
+  const preferredSkills = result.breakdown?.preferred_skills || { matched: [], partial: [], missing: [] }
 
   return (
     <motion.div
@@ -235,21 +426,25 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
           )}
           <div className="flex gap-5">
             <ScoreRing score={Math.round(result.score)} delta={delta} />
-            {result.summary?.profile && (
-              <div className="flex-1 min-w-0">
-                <SectionLabel>Profile summary</SectionLabel>
-                <p className="text-[13px] text-t2 leading-relaxed">
-                  {/* Sentences, so joining reads naturally - but each may carry markup */}
-                  {(Array.isArray(result.summary.profile) ? result.summary.profile : [result.summary.profile])
-                    .map((s, i) => (
-                      <span key={i}>
-                        {i > 0 && ' '}
-                        <RichText text={s} />
-                      </span>
-                    ))}
-                </p>
-              </div>
-            )}
+            <div className="flex-1 min-w-0 space-y-3">
+              {/* What you are actually being scored against */}
+              <JobContext job={result.job} />
+              {result.summary?.profile && (
+                <div>
+                  <SectionLabel>Profile summary</SectionLabel>
+                  <p className="text-[13px] text-t2 leading-relaxed">
+                    {/* Sentences, so joining reads naturally - but each may carry markup */}
+                    {(Array.isArray(result.summary.profile) ? result.summary.profile : [result.summary.profile])
+                      .map((s, i) => (
+                        <span key={i}>
+                          {i > 0 && ' '}
+                          <RichText text={s} />
+                        </span>
+                      ))}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
           {Object.keys(breakdownScores).length > 0 && (
             <div className="mt-5 pt-4 space-y-2.5" style={{ borderTop: '1px solid rgba(0,0,0,0.06)' }}>
@@ -262,29 +457,27 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
 
       <GatesPanel gates={result.gates} />
 
+      {/* Skills you can prove but a recruiter's keyword search cannot find */}
+      <HiddenSkillsAlert evidence={result.evidence} />
+
       <DutiesPanel duties={result.duties} />
 
-      {(matchedKw.length > 0 || partialKw.length > 0 || missingKw.length > 0) && (
-        <div className={`grid grid-cols-1 gap-3 ${partialKw.length > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
-          {[
-            { label: 'Matched keywords', items: matchedKw, kind: 'matched', empty: 'No matches found.' },
-            ...(partialKw.length > 0
-              ? [{ label: 'Related skills', items: partialKw, kind: 'partial', empty: '', hint: 'You have something similar - half credit' }]
-              : []),
-            { label: 'Missing keywords', items: missingKw, kind: 'missing', empty: 'All keywords covered!' },
-          ].map(({ label, items, kind, empty, hint }) => (
-            <CardSection key={label} title={label} action={
-              <span className="text-[11px] font-bold" style={{ color: CHIP_STYLES[kind].color }}>{items.length}</span>
-            }>
-              {hint && <p className="text-[11.5px] text-t3 mb-2">{hint}</p>}
-              {items.length > 0
-                ? <div className="flex flex-wrap gap-1.5">{items.map(k => <KeywordChip key={k} text={k} kind={kind} />)}</div>
-                : <p className="text-[13px] text-t3">{empty}</p>
-              }
-            </CardSection>
-          ))}
-        </div>
-      )}
+      {/* Required and preferred skills, each showing where it was found */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <SkillsPanel
+          title="Required skills"
+          skills={requiredSkills}
+          evidence={result.evidence?.required}
+        />
+        <SkillsPanel
+          title="Preferred skills"
+          skills={preferredSkills}
+          evidence={result.evidence?.preferred}
+          hint="Nice-to-haves. Missing these is not a blocker."
+        />
+      </div>
+
+      <SkillImpact impact={result.skill_impact} />
 
       {(result.summary?.strengths?.length > 0 || result.summary?.gaps?.length > 0) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -326,6 +519,8 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
           </CardBody>
         </Card>
       )}
+
+      <ScoreMath rows={result.score_math} />
 
       {footer}
     </motion.div>

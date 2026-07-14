@@ -77,12 +77,20 @@ def match(resume: dict, jd: dict, llm_judge: bool = False) -> dict:
 
     # --- Scores: what the candidate can act on ---
     # Each scorer returns None when the JD gives it nothing to judge against.
-    req_score, matched_required, partial_required, missing_required = (
-        score_required_skills(resume, jd)
-    )
-    pref_score, matched_preferred, partial_preferred, missing_preferred = (
-        score_preferred_skills(resume, jd)
-    )
+    (
+        req_score,
+        matched_required,
+        partial_required,
+        missing_required,
+        required_evidence,
+    ) = score_required_skills(resume, jd)
+    (
+        pref_score,
+        matched_preferred,
+        partial_preferred,
+        missing_preferred,
+        preferred_evidence,
+    ) = score_preferred_skills(resume, jd)
     edu_score = score_education(resume, jd)
     cert_score = score_certifications(resume, jd)
 
@@ -147,6 +155,10 @@ def match(resume: dict, jd: dict, llm_judge: bool = False) -> dict:
         "matched_preferred": matched_preferred,
         "partial_preferred": partial_preferred,
         "missing_preferred": missing_preferred,
+        # How each skill was resolved - lets the UI show proof, and surfaces the
+        # skills proven in experience but absent from the skills section.
+        "required_evidence": required_evidence,
+        "preferred_evidence": preferred_evidence,
         "demonstrated_duties": demonstrated,
         "partial_duties": partial_duties,
         "missing_duties": missing_duties,

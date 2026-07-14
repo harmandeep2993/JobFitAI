@@ -12,6 +12,7 @@ import re
 from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm
+from services.matcher.skill_aliases import build_evidence_corpus, found_in_corpus
 
 logger = get_logger(__name__)
 
@@ -205,18 +206,33 @@ def ats_check(resume_text: str, required_skills: list[str] | None = None) -> dic
 
 _GENERATE_PROMPT = """You are an expert resume writer specialising in ATS (Applicant Tracking System) optimisation.
 
-TASK: Rewrite the resume below so it passes ATS keyword matching for the job description provided.
+TASK: Rewrite the resume below so a recruiter searching for this job's keywords finds it, WITHOUT ever claiming something the candidate has not done.
 
-RULES:
-- Keep all real experience, education, and skills - never invent anything
-- Mirror exact keywords and phrases from the job description wherever they truthfully apply
-- Use standard ATS-friendly section headings: Summary, Work Experience, Education, Skills
-- Write clean plain text - no tables, no columns, no decorative symbols
-- Each bullet point should start with a strong action verb
-- Return ONLY a JSON object with this exact shape:
+THE ONE UNBREAKABLE RULE: every fact in your output must be traceable to the resume.
+- Never add a skill the resume does not evidence, even if the job demands it. A missing skill stays missing.
+- Never invent an employer, job title, date, degree, metric, or achievement.
+- Never inflate scope ("led a team" when the resume says "worked in a team").
+- You MAY re-word, re-order, and surface things already buried in the text.
+- If the candidate demonstrably used a skill inside a bullet, you MAY also list it in Skills. That is surfacing, not inventing.
+
+TARGET KEYWORDS (use ONLY those the resume genuinely supports): {keywords}
+
+STYLE:
+- Mirror the job description's exact wording wherever it truthfully applies, so keyword search matches.
+- Start each bullet with a strong action verb; keep the candidate's real numbers.
+- Standard ATS headings, plain text, no tables or columns or symbols.
+
+Return ONLY a JSON object with this exact shape:
 
 {
-  "summary": "2-3 sentence professional summary using JD keywords",
+  "contact": {
+    "name": "candidate's full name exactly as written in the resume",
+    "email": "email from the resume, or empty",
+    "phone": "phone from the resume, or empty",
+    "location": "city, country, or empty",
+    "links": ["linkedin/github/portfolio urls from the resume"]
+  },
+  "summary": "2-3 sentence professional summary using JD keywords the candidate genuinely supports",
   "experience": [
     {
       "title": "Job Title",
@@ -242,7 +258,10 @@ JOB DESCRIPTION:
 {jd}
 """
 
-_PLAIN_TEXT_TEMPLATE = """{summary}
+_PLAIN_TEXT_TEMPLATE = """{contact}
+
+SUMMARY
+{summary}
 
 WORK EXPERIENCE
 {experience}
@@ -270,12 +289,81 @@ def _render_plain_text(parsed: dict) -> str:
             f"{edu.get('degree', '')} - {edu.get('institution', '')} ({edu.get('year', '')})"
         )
 
+    # Contact block first: an ATS that finds no email has nothing to attach the
+    # application to, and the user must see it in the preview before downloading.
+    contact = parsed.get("contact") or {}
+    contact_bits = [
+        (contact.get("email") or "").strip(),
+        (contact.get("phone") or "").strip(),
+        (contact.get("location") or "").strip(),
+    ]
+    contact_bits += [
+        link.strip()
+        for link in (contact.get("links") or [])
+        if isinstance(link, str) and link.strip()
+    ]
+    contact_lines = [(contact.get("name") or "").strip()]
+    joined = " | ".join(b for b in contact_bits if b)
+    if joined:
+        contact_lines.append(joined)
+
     return _PLAIN_TEXT_TEMPLATE.format(
+        contact="\n".join(ln for ln in contact_lines if ln),
         summary=parsed.get("summary", ""),
         experience="\n".join(exp_lines).strip(),
         skills=", ".join(parsed.get("skills") or []),
         education="\n".join(edu_lines),
     )
+
+
+def _verify_against_source(parsed: dict, resume_text: str) -> tuple[dict, list[str]]:
+    """Strip anything the generated resume claims that the original does not support.
+
+    "Never invent anything" is an instruction, not a guarantee - so it is enforced
+    here rather than trusted. Two checks, both against the raw resume text:
+
+      skills     - a skill must appear in the source (via the same alias-aware
+                   evidence search used for scoring). An invented skill is the
+                   most damaging fabrication: it is exactly what a recruiter
+                   screens on, and the candidate cannot defend it in interview.
+      employers  - a company or job title that appears nowhere in the source is
+                   a fabricated role and is removed entirely.
+
+    Bullets are not machine-verifiable (they are prose about real work), so they
+    are left to the prompt and to the user's review of the before/after diff.
+
+    Returns (cleaned_resume, removed) where removed names what was stripped.
+    """
+    corpus = build_evidence_corpus({"text": resume_text})
+    removed: list[str] = []
+
+    skills = []
+    for skill in parsed.get("skills") or []:
+        if not isinstance(skill, str) or not skill.strip():
+            continue
+        if found_in_corpus(skill, corpus) or skill.lower().strip() in corpus:
+            skills.append(skill)
+        else:
+            removed.append(f"skill: {skill}")
+            logger.warning("ATS generate: dropped unsupported skill '%s'", skill)
+    parsed["skills"] = skills
+
+    experience = []
+    for job in parsed.get("experience") or []:
+        if not isinstance(job, dict):
+            continue
+        company = (job.get("company") or "").lower().strip()
+        title = (job.get("title") or "").lower().strip()
+        # One of the two must appear verbatim in the source for the role to be real.
+        if (company and company in corpus) or (title and title in corpus):
+            experience.append(job)
+        else:
+            label = f"{job.get('title', '?')} at {job.get('company', '?')}"
+            removed.append(f"role: {label}")
+            logger.warning("ATS generate: dropped unsupported role '%s'", label)
+    parsed["experience"] = experience
+
+    return parsed, removed
 
 
 def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
@@ -300,7 +388,12 @@ def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
         exact_coverage(resume_text, required_skills) if required_skills else None
     )
 
-    prompt = _GENERATE_PROMPT.format(resume=resume_text[:6000], jd=jd_text[:3000])
+    # Give the writer the exact keywords to aim for - it may still only use the
+    # ones the resume genuinely supports.
+    keywords = ", ".join(required_skills[:20]) or "none extracted"
+    prompt = _GENERATE_PROMPT.format(
+        resume=resume_text[:6000], jd=jd_text[:3000], keywords=keywords
+    )
     _res = call_llm(prompt, model=state.get_quality_model())
     if not _res or not _res.text:
         return None
@@ -315,6 +408,9 @@ def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
         logger.warning("ATS generate: failed to parse LLM JSON: %s", e)
         return None
 
+    # Enforce the no-fabrication rule instead of trusting it.
+    parsed, removed = _verify_against_source(parsed, resume_text)
+
     plain_text = _render_plain_text(parsed)
     coverage_after = (
         exact_coverage(plain_text, required_skills) if required_skills else None
@@ -327,4 +423,6 @@ def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
         "coverage_after": coverage_after,
         "section_flags": sec_flags,
         "formatting_flags": fmt_flags,
+        # Anything the model claimed that the source resume does not support.
+        "removed_unsupported": removed,
     }

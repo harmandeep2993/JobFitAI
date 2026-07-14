@@ -171,6 +171,80 @@ def test_ats_check_contract(client, auth, tmp_token):
     assert_keys(body["section_flags"][0], ["name", "found", "suggestion"])
 
 
+def test_ats_generation_strips_fabrications():
+    """The no-invention rule is enforced, not merely requested of the model."""
+    from services.ats import _verify_against_source
+
+    source = (
+        "Jane Doe | jane@example.com\n"
+        "WORK EXPERIENCE\nData Analyst, Acme GmbH (2021-2024)\n"
+        "- Built dashboards in Power BI and wrote SQL queries\n"
+        "- Deployed a churn model with Docker\n"
+        "SKILLS\nPython, SQL, Power BI, Docker"
+    )
+    hallucinated = {
+        "skills": ["Python", "SQL", "Docker", "Kubernetes", "Terraform"],
+        "experience": [
+            {
+                "title": "Data Analyst",
+                "company": "Acme GmbH",
+                "bullets": ["Built dashboards"],
+            },
+            {
+                "title": "Senior ML Engineer",
+                "company": "Google",
+                "bullets": ["Led a team of 8"],
+            },
+        ],
+    }
+    clean, removed = _verify_against_source(hallucinated, source)
+
+    # Skills the resume evidences survive; invented ones do not
+    assert set(clean["skills"]) == {"Python", "SQL", "Docker"}
+    assert any("Kubernetes" in r for r in removed)
+    assert any("Terraform" in r for r in removed)
+
+    # An entirely fabricated employer is dropped
+    assert len(clean["experience"]) == 1
+    assert clean["experience"][0]["company"] == "Acme GmbH"
+    assert any("Google" in r for r in removed)
+
+
+def test_ats_docx_includes_contact_header(client, auth):
+    """A resume with no name or email is not sendable, and ATS cannot route it."""
+    r = client.post(
+        "/api/ats/docx",
+        headers=auth,
+        json={
+            "resume": {
+                "contact": {
+                    "name": "Jane Doe",
+                    "email": "jane@example.com",
+                    "phone": "+49 123",
+                    "links": ["linkedin.com/in/jane"],
+                },
+                "summary": "Data analyst.",
+                "skills": ["Python"],
+                "experience": [],
+                "education": [],
+            }
+        },
+    )
+    assert r.status_code == 200
+
+    # A DOCX is a zip - read the real paragraphs back rather than the raw bytes
+    import io as _io
+
+    from docx import Document
+
+    doc = Document(_io.BytesIO(r.content))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Jane Doe" in text
+    assert "jane@example.com" in text
+    assert "+49 123" in text
+    assert "linkedin.com/in/jane" in text
+
+
 def test_ats_docx_contract(client, auth):
     r = client.post(
         "/api/ats/docx",

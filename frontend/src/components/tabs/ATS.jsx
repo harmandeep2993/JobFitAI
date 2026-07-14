@@ -316,6 +316,35 @@ export default function ATS() {
               </div>
             )}
 
+            {/* Anything the writer claimed that the source resume does not back up.
+                Shown so the user can trust what is left - and see what would have
+                been a lie on a document they sign their name to. */}
+            {optimResult.removed_unsupported?.length > 0 && (
+              <div className="rounded-lg border p-3.5"
+                style={{ background: 'rgba(22,163,74,0.05)', borderColor: 'rgba(22,163,74,0.25)' }}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 1.5l5.5 2.5v4c0 3-2.2 5-5.5 6-3.3-1-5.5-3-5.5-6v-4L8 1.5z"/><path d="M6 8l1.5 1.5L10.5 6.5"/>
+                  </svg>
+                  <span className="text-[12.5px] font-semibold" style={{ color: '#16a34a' }}>
+                    Accuracy check: removed {optimResult.removed_unsupported.length} unsupported claim{optimResult.removed_unsupported.length > 1 ? 's' : ''}
+                  </span>
+                </div>
+                <p className="text-[12px] text-t2 leading-relaxed mb-2">
+                  The AI suggested these, but your resume does not evidence them - so they were stripped.
+                  Everything below is backed by your real experience.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {optimResult.removed_unsupported.map((r, i) => (
+                    <span key={i} className="px-2 py-0.5 text-[11.5px] rounded-sm line-through"
+                      style={{ background: 'rgb(var(--surface-2))', color: 'rgb(var(--t3))' }}>
+                      {r}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {optimResult.plain_text && (
               <pre className="rounded-lg p-4 text-[12px] text-t1 whitespace-pre-wrap overflow-auto max-h-96 leading-relaxed"
                 style={{ background: 'rgb(var(--surface-2))', border: '1px solid rgba(0,0,0,0.06)' }}>

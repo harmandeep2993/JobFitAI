@@ -28,6 +28,9 @@ router = APIRouter()
 # Body text size for generated DOCX files - standard resume body size.
 _DOCX_BODY_PT = 11
 
+# The candidate's name leads the document and should read as the title.
+_DOCX_NAME_PT = 16
+
 
 def _resolve_resume_text(user_id: str, resume_id: str, tmp: str) -> str:
     """Return extracted text for a stored resume or a temp upload token.
@@ -112,11 +115,42 @@ async def api_ats_optimise(
 
 
 def _build_docx(parsed: dict) -> bytes:
-    """Render the optimised-resume JSON into a simple ATS-friendly DOCX."""
+    """Render the optimised-resume JSON into a sendable, ATS-friendly DOCX.
+
+    Single column, standard headings, no tables or text boxes - the layouts that
+    make ATS parsers scramble or skip content. The contact block is plain text at
+    the top (never a header/footer or image), because that is the single most
+    common reason a resume parses with no name or email attached.
+    """
     doc = Document()
     style = doc.styles["Normal"]
     style.font.name = "Calibri"
     style.font.size = Pt(_DOCX_BODY_PT)
+
+    # === Contact header ===
+    # A resume without one is not sendable, and an ATS that cannot find an email
+    # has nothing to attach the application to.
+    contact = parsed.get("contact") or {}
+    name = (contact.get("name") or "").strip()
+    if name:
+        heading = doc.add_paragraph()
+        run = heading.add_run(name)
+        run.bold = True
+        run.font.size = Pt(_DOCX_NAME_PT)
+
+    contact_bits = [
+        (contact.get("email") or "").strip(),
+        (contact.get("phone") or "").strip(),
+        (contact.get("location") or "").strip(),
+    ]
+    contact_bits += [
+        link.strip()
+        for link in (contact.get("links") or [])
+        if isinstance(link, str) and link.strip()
+    ]
+    contact_bits = [b for b in contact_bits if b]
+    if contact_bits:
+        doc.add_paragraph(" | ".join(contact_bits))
 
     summary = (parsed.get("summary") or "").strip()
     if summary:

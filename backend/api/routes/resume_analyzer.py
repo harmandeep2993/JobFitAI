@@ -35,7 +35,7 @@ ALLOWED_EXTENSIONS: Set[str] = SUPPORTED_EXTENSIONS
 MAX_FILE_MB: int = MAX_FILE_SIZE_MB
 
 # Bump when match() scoring semantics change - keys the analysis cache.
-_SCORING_VERSION = "v2"
+_SCORING_VERSION = "v3"
 
 _PREVIEW_TYPES = {
     ".pdf": "application/pdf",
@@ -191,9 +191,7 @@ def _build_breakdown(results: dict) -> dict:
             "matched": [],
             "missing": [],
         },
-        "experience": {"score": ss.get("experience"), "matched": [], "missing": []},
         "education": {"score": ss.get("education"), "matched": [], "missing": []},
-        "languages": {"score": ss.get("languages"), "matched": [], "missing": []},
         "certifications": {
             "score": ss.get("certifications"),
             "matched": [],
@@ -267,7 +265,9 @@ async def api_analyze(
         if not resume_json or not jd_json:
             return resume_json, jd_json, None, None
 
-        results = match(resume_json, jd_json)
+        # llm_judge: the Analyser scores one job for one user, so it can afford
+        # the LLM responsibility-coverage call that bulk job scoring cannot.
+        results = match(resume_json, jd_json, llm_judge=True)
         summary = generate_summary(resume_json, jd_json, results)
         return resume_json, jd_json, results, summary
 
@@ -298,6 +298,14 @@ async def api_analyze(
         "label": results.get("label", ""),
         "summary": _build_summary(summary),
         "breakdown": _build_breakdown(results),
+        # Hard requirements (years, language level): warnings, never points
+        "gates": results.get("gates") or {},
+        # Per-duty verdicts from the LLM coverage judge
+        "duties": {
+            "demonstrated": results.get("demonstrated_duties") or [],
+            "partial": results.get("partial_duties") or [],
+            "missing": results.get("missing_duties") or [],
+        },
         "keywords": {
             "matched": results.get("matched_required") or [],
             "partial": results.get("partial_required") or [],

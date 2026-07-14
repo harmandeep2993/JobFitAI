@@ -33,14 +33,18 @@ class LLMConfig(BaseModel):
 
 
 class MatcherWeights(BaseModel):
+    """Weights for the scored sections only.
+
+    Experience years and language level are gates (pass/fail), not weighted
+    sections - they carry no weight and must not appear here.
+    """
+
     model_config = {"extra": "ignore"}
 
     required_skills: float = Field(ge=0.0, le=1.0)
     responsibilities: float = Field(ge=0.0, le=1.0)
-    experience: float = Field(ge=0.0, le=1.0)
-    education: float = Field(ge=0.0, le=1.0)
     preferred_skills: float = Field(ge=0.0, le=1.0)
-    languages: float = Field(ge=0.0, le=1.0)
+    education: float = Field(ge=0.0, le=1.0)
     certifications: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
@@ -51,10 +55,8 @@ class MatcherWeights(BaseModel):
                 [
                     self.required_skills,
                     self.responsibilities,
-                    self.experience,
-                    self.education,
                     self.preferred_skills,
-                    self.languages,
+                    self.education,
                     self.certifications,
                 ]
             ),

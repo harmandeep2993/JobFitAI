@@ -1,22 +1,20 @@
 # services/matcher/scores/__init__.py
 """
-Scores package for JOBsFitAI.
-Exports all section scorers for use in matcher.py.
+Scored sections of the matcher - the parts of a JD a candidate can act on.
+
+Years of experience and language level are NOT scorers: they are pass/fail
+gates (services/matcher/gates.py), not weighted points. Responsibility coverage
+is LLM-judged (services/matcher/responsibility_coverage.py) because cosine
+similarity provably cannot separate a genuine match from an unrelated one.
 """
 
 from .certifications import score_certifications
 from .education import score_education
-from .experiences import score_experience
-from .languages import score_languages
-from .responsibilities import score_responsibilities
 from .skills import score_preferred_skills, score_required_skills
 
 __all__ = [
     "score_required_skills",
     "score_preferred_skills",
-    "score_responsibilities",
-    "score_experience",
     "score_education",
-    "score_languages",
     "score_certifications",
 ]

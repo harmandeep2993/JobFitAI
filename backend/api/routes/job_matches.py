@@ -449,7 +449,8 @@ async def api_score_jd(
         if not jd_json:
             return None, None
         try:
-            return jd_json, match(state.get_resume(user_id), jd_json)
+            # Single user-requested job - worth the LLM coverage judgement.
+            return jd_json, match(state.get_resume(user_id), jd_json, llm_judge=True)
         except Exception as exc:
             logger.exception("match() failed in score-jd: %s", exc)
             return None, None

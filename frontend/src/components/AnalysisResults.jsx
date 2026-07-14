@@ -83,9 +83,110 @@ function KeywordChip({ text, kind }) {
   )
 }
 
+// === Hard requirement gates ===
+// Years of experience and language level are pass/fail dealbreakers, not
+// fractions of a score, so they are surfaced as warnings beside the number.
+function GatesPanel({ gates }) {
+  const items = []
+  if (gates?.experience) items.push(gates.experience)
+  for (const g of gates?.languages || []) items.push(g)
+  if (items.length === 0) return null
+
+  const unmet = items.filter(g => !g.met)
+  if (unmet.length === 0) {
+    return (
+      <Card>
+        <CardBody className="py-3.5 flex items-center gap-2.5">
+          <span className="w-4 h-4 rounded-full flex items-center justify-center flex-shrink-0"
+            style={{ background: 'rgba(22,163,74,0.1)', color: '#16a34a' }}>
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,6 5,9 10,3"/></svg>
+          </span>
+          <span className="text-[13px] text-t2">
+            You meet every hard requirement for this role.
+          </span>
+        </CardBody>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="rounded-lg border p-4"
+      style={{ background: 'rgba(217,119,6,0.05)', borderColor: 'rgba(217,119,6,0.25)' }}>
+      <div className="flex items-center gap-2 mb-2.5">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round">
+          <path d="M8 1.5L15 14H1L8 1.5zM8 6.5v3M8 11.5v.5"/>
+        </svg>
+        <span className="text-[13px] font-semibold" style={{ color: '#d97706' }}>
+          {unmet.length === 1 ? 'Hard requirement not met' : `${unmet.length} hard requirements not met`}
+        </span>
+      </div>
+      <ul className="space-y-1.5">
+        {unmet.map((g, i) => (
+          <li key={i} className="text-[12.5px] text-t2 leading-relaxed pl-4 relative">
+            <span className="absolute left-0 top-[7px] w-1 h-1 rounded-full" style={{ background: '#d97706' }} />
+            {g.message}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11.5px] text-t3 mt-2.5">
+        These are not counted in the score - they are pass/fail filters a recruiter applies before reading your resume.
+      </p>
+    </div>
+  )
+}
+
+// === Per-duty coverage from the LLM judge ===
+function DutiesPanel({ duties }) {
+  const demonstrated = duties?.demonstrated || []
+  const partial = duties?.partial || []
+  const missing = duties?.missing || []
+  const total = demonstrated.length + partial.length + missing.length
+  if (total === 0) return null
+
+  const rows = [
+    ...demonstrated.map(d => ({ ...d, kind: 'matched', mark: 'Shown' })),
+    ...partial.map(d => ({ ...d, kind: 'partial', mark: 'Partial' })),
+    ...missing.map(duty => ({ duty, evidence: '', kind: 'missing', mark: 'Not shown' })),
+  ]
+
+  return (
+    <CardSection
+      title="Job duties you demonstrate"
+      action={
+        <span className="text-[11px] font-bold" style={{ color: '#16a34a' }}>
+          {demonstrated.length} / {total}
+        </span>
+      }
+    >
+      <ul className="space-y-2.5">
+        {rows.map((r, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded-sm border flex-shrink-0 mt-px"
+              style={CHIP_STYLES[r.kind]}>
+              {r.mark}
+            </span>
+            <div className="min-w-0">
+              <div className="text-[13px] text-t1 leading-snug">{r.duty}</div>
+              {r.evidence && (
+                <div className="text-[12px] text-t3 mt-0.5 leading-snug">
+                  Your evidence: {r.evidence}
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </CardSection>
+  )
+}
+
 export function ResultsPanel({ result, delta = null, footer = null }) {
+  // Sections the JD said nothing about come back as null - skip their bars
+  // rather than drawing a misleading zero.
   const breakdownScores = Object.fromEntries(
-    Object.entries(result.breakdown || {}).map(([k, v]) => [k, typeof v === 'object' ? v.score : v])
+    Object.entries(result.breakdown || {})
+      .map(([k, v]) => [k, typeof v === 'object' ? v.score : v])
+      .filter(([, v]) => v !== null && v !== undefined)
   )
   const matchedKw = result.keywords?.matched || []
   const partialKw = result.keywords?.partial || []
@@ -126,6 +227,10 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
           )}
         </CardBody>
       </Card>
+
+      <GatesPanel gates={result.gates} />
+
+      <DutiesPanel duties={result.duties} />
 
       {(matchedKw.length > 0 || partialKw.length > 0 || missingKw.length > 0) && (
         <div className={`grid grid-cols-1 gap-3 ${partialKw.length > 0 ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>

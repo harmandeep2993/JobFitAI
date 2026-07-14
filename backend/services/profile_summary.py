@@ -35,6 +35,8 @@ def generate_summary(resume_json, jd_json, results):
     # candidate/job objects, meta.total_experience_years).
     candidate_years = resume_json.get("meta", {}).get("total_experience_years", 0)
     section_scores = results.get("section_scores", {})
+    gates = results.get("gates") or {}
+    exp_gate = gates.get("experience") or {}
 
     context = {
         "score": results.get("overall_score", 0),
@@ -44,11 +46,12 @@ def generate_summary(resume_json, jd_json, results):
         "matched_pref": results.get("matched_preferred", []),
         "missing_pref": results.get("missing_preferred", []),
         "candidate_years": candidate_years,
-        "required_years": 0,  # JD schema has no explicit required-years field
+        # Parsed from the JD by the experience gate; 0 when the JD states none
+        "required_years": exp_gate.get("required_years", 0),
+        "missing_duties": results.get("missing_duties", []),
         "breakdown": {
             "required_skills": section_scores.get("required_skills", 0),
             "responsibilities": section_scores.get("responsibilities", 0),
-            "experience": section_scores.get("experience", 0),
             "education": section_scores.get("education", 0),
         },
         "candidate": {
@@ -193,7 +196,7 @@ def generate_swot(resume_json, jd_json, results):
 ROLE: {role_title}
 OVERALL SCORE: {score}/100
 CANDIDATE EXPERIENCE: {candidate_years} years
-SECTION SCORES: required_skills={_fmt_score(section_scores.get('required_skills'))}, responsibilities={_fmt_score(section_scores.get('responsibilities'))}, experience={_fmt_score(section_scores.get('experience'))}, education={_fmt_score(section_scores.get('education'))}
+SECTION SCORES: required_skills={_fmt_score(section_scores.get('required_skills'))}, responsibilities={_fmt_score(section_scores.get('responsibilities'))}, education={_fmt_score(section_scores.get('education'))}
 
 MATCHED REQUIRED SKILLS: {', '.join(matched_req[:8]) or 'none'}
 MISSING REQUIRED SKILLS:  {', '.join(missing_req[:8]) or 'none'}

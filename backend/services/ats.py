@@ -391,8 +391,12 @@ def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
     # Give the writer the exact keywords to aim for - it may still only use the
     # ones the resume genuinely supports.
     keywords = ", ".join(required_skills[:20]) or "none extracted"
-    prompt = _GENERATE_PROMPT.format(
-        resume=resume_text[:6000], jd=jd_text[:3000], keywords=keywords
+    # str.format() cannot be used here: the prompt embeds a literal JSON schema,
+    # and format() reads its braces as placeholders (KeyError '"contact"').
+    prompt = (
+        _GENERATE_PROMPT.replace("{keywords}", keywords)
+        .replace("{resume}", resume_text[:6000])
+        .replace("{jd}", jd_text[:3000])
     )
     _res = call_llm(prompt, model=state.get_quality_model())
     if not _res or not _res.text:

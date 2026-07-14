@@ -14,7 +14,7 @@ import json
 from datetime import datetime, timezone
 
 from core import database
-from core.config import PROVIDER_CONFIGS
+from core.config import PROVIDER_CONFIGS, TASK_MODELS
 from core.logger import get_logger
 from services.llm.providers import anthropic as _anthropic_p
 from services.llm.providers import groq as _groq_p
@@ -90,23 +90,58 @@ def get_model() -> str:
     return PROVIDER_CONFIGS.get(_state["provider"], {}).get("model", "")
 
 
-def get_quality_model() -> str:
-    """Return the model for low-volume work worth spending on.
+def _provider_module(name: str):
+    """Return the provider module for a name, or None when unknown."""
+    return {
+        "openai": _openai_p,
+        "anthropic": _anthropic_p,
+        "groq": _groq_p,
+    }.get(name)
 
-    Two tiers exist because the pipeline has two very different shapes. Bulk work
-    runs in loops - a fetch run extracts one JD per job and classifies hundreds
-    of titles - so it must stay on the cheap model. Quality work happens once per
-    user action and is either read by the user, sent to an employer, or decides a
-    single job's score; that is where a stronger model pays for itself.
 
-    Falls back to the active model when the provider nominates no quality model.
-    An explicit admin pin always wins - if someone selected a model in the UI,
-    honour it rather than silently calling a different one.
+def resolve_task(task: str) -> tuple[str, str]:
+    """Resolve a task name to the (provider, model) that should serve it.
+
+    Tasks are routed independently, so cheap bulk work can run on one vendor
+    while generation runs on another - see task_models in config.yaml.
+
+    Resolution order:
+      1. An explicit admin pin in Settings wins for everything. If someone
+         selected a model in the UI, honour it rather than silently calling a
+         different one.
+      2. The task's configured provider+model, provided that provider's API key
+         is actually present.
+      3. The active provider's default model. A task pointed at a provider with
+         no key degrades to a working one instead of failing every request.
     """
+    active = _state["provider"]
+
     if _state["model"]:
-        return _state["model"]
-    cfg = PROVIDER_CONFIGS.get(_state["provider"], {})
-    return cfg.get("quality_model") or cfg.get("model", "")
+        return active, _state["model"]
+
+    cfg = TASK_MODELS.get(task) or {}
+    provider = (cfg.get("provider") or "").strip()
+    model = (cfg.get("model") or "").strip()
+
+    if provider and model:
+        mod = _provider_module(provider)
+        # Ollama needs no key; every other provider does.
+        if provider == "ollama" or (mod and mod.has_key()):
+            return provider, model
+        logger.warning(
+            "Task '%s' is routed to %s but its API key is missing - "
+            "falling back to %s",
+            task,
+            provider,
+            active,
+        )
+
+    return active, PROVIDER_CONFIGS.get(active, {}).get("model", "")
+
+
+def get_quality_model() -> str:
+    """Model id for the quality tier (kept for callers that only need the name)."""
+    return resolve_task("quality")[1]
 
 
 def set_active(provider: str, model: str | None = None) -> None:

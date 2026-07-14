@@ -10,8 +10,8 @@ The Messages API differs from the OpenAI chat API in three ways this module
 hides from the rest of the app:
   - auth is x-api-key, not a bearer token, and needs an anthropic-version header
   - max_tokens is required, not optional
-  - there is no response_format json_object; JSON is forced by prefilling the
-    assistant turn with an opening brace (see call()).
+  - there is no response_format json_object, and the current models reject the
+    assistant-prefill trick, so JSON is requested in the prompt (see call()).
 """
 
 import os
@@ -19,12 +19,7 @@ import time
 
 import requests
 
-from core.config import (
-    ANTHROPIC_CONFIG,
-    LLM_MAX_OUTPUT_TOKENS,
-    LLM_TEMPERATURE,
-    LLM_TIMEOUT,
-)
+from core.config import ANTHROPIC_CONFIG, LLM_MAX_OUTPUT_TOKENS, LLM_TIMEOUT
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,6 +33,12 @@ _API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # Retry the same transient failures the other providers retry.
 _RETRY_STATUS = (429, 500, 502, 503, 504)
 _MAX_ATTEMPTS = 4
+
+# Appended to the prompt in JSON mode - see call() for why prefill is not used.
+_JSON_ONLY_SUFFIX = (
+    "\n\nRespond with a single valid JSON object and nothing else. "
+    "No markdown code fences, no explanation before or after."
+)
 
 
 def has_key() -> bool:
@@ -84,9 +85,8 @@ def call(prompt: str, model: str | None = None, json_mode: bool = True) -> str |
     Args:
         prompt: Prompt text.
         model: Model id; falls back to the config default.
-        json_mode: When True, the assistant turn is prefilled with "{" so the
-            model can only continue a JSON object. The brace is prepended back
-            onto the reply, since the API returns only the continuation.
+        json_mode: When True, a JSON-only instruction is appended to the prompt.
+            The router's parse_json_response strips any fence that survives.
 
     Returns:
         Response text, or None on failure (never raises - the router retries).
@@ -96,17 +96,23 @@ def call(prompt: str, model: str | None = None, json_mode: bool = True) -> str |
         return None
 
     use_model = model or _MODEL
-    messages = [{"role": "user", "content": prompt}]
-    if json_mode:
-        # Prefill: Claude must continue from an open brace, so it cannot emit a
-        # preamble, a code fence, or prose around the JSON.
-        messages.append({"role": "assistant", "content": "{"})
 
+    # There is no response_format json_object here, and the current models also
+    # reject the assistant-prefill trick ("This model does not support assistant
+    # message prefill", HTTP 400). So JSON is requested in the prompt and the
+    # router's parse_json_response strips any fence or preamble that survives.
+    content = prompt
+    if json_mode:
+        content += _JSON_ONLY_SUFFIX
+
+    # temperature is NOT sent. The current Claude models reject it outright
+    # ("`temperature` is deprecated for this model", HTTP 400), and Anthropic
+    # only serves the quality tier - generation and judgement, where a pinned
+    # temperature of 0 was never load-bearing the way it is for extraction.
     payload = {
         "model": use_model,
         "max_tokens": LLM_MAX_OUTPUT_TOKENS,
-        "temperature": LLM_TEMPERATURE,
-        "messages": messages,
+        "messages": [{"role": "user", "content": content}],
     }
 
     for attempt in range(_MAX_ATTEMPTS):
@@ -129,8 +135,7 @@ def call(prompt: str, model: str | None = None, json_mode: bool = True) -> str |
                         "increase max_output_tokens",
                         len(text),
                     )
-                # Put back the brace we prefilled, so the caller sees valid JSON.
-                return "{" + text if json_mode else text
+                return text
 
             if response.status_code in _RETRY_STATUS and attempt < _MAX_ATTEMPTS - 1:
                 wait = min(2 * (attempt + 1), 30)

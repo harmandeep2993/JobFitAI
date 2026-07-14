@@ -83,6 +83,9 @@ JD_MAX_CHARS = _llm["jd_max_input_chars"]
 # Provider configs
 OPENAI_CONFIG = config["openai_provider"]
 ANTHROPIC_CONFIG = config.get("anthropic_provider", {})
+
+# Task -> {provider, model} routing (see config.yaml). Empty = single-provider mode.
+TASK_MODELS = config.get("task_models", {})
 GROQ_CONFIG = config["groq_provider"]
 GEMINI_CONFIG = config["gemini_provider"]
 HUGGINGFACE_CONFIG = config["huggingface_provider"]

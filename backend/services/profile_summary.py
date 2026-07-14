@@ -8,7 +8,6 @@ Produces structured JSON with four sections: profile, strengths, gaps, focus.
 Falls back to a deterministic template if the LLM call fails.
 """
 
-from core import state
 from services.llm.caller import call_llm
 
 
@@ -148,7 +147,7 @@ Rules:
 - No percentages, no em-dashes, no emojis, no score numbers
 - Be specific - name actual skills, not vague phrases"""
 
-    _res = call_llm(prompt, model=state.get_quality_model())
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if response and len(response.strip()) > 20:
@@ -238,7 +237,7 @@ Return ONLY valid JSON, nothing else:
   "threats":       ["phrase 1", "phrase 2", "phrase 3"]
 }}"""
 
-    _res = call_llm(prompt, model=state.get_quality_model())
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if response:

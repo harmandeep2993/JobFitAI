@@ -9,7 +9,6 @@ generate_ats_resume() - LLM pipeline: rewrites the resume to maximise ATS keywor
 import json
 import re
 
-from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm
 from services.matcher.skill_aliases import build_evidence_corpus, found_in_corpus
@@ -398,7 +397,7 @@ def generate_ats_resume(resume_text: str, jd_text: str) -> dict | None:
         .replace("{resume}", resume_text[:6000])
         .replace("{jd}", jd_text[:3000])
     )
-    _res = call_llm(prompt, model=state.get_quality_model())
+    _res = call_llm(prompt, task="quality")
     if not _res or not _res.text:
         return None
 

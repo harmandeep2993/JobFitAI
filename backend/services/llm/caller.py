@@ -160,32 +160,28 @@ def _call_with_retry(
     return None, _MAX_ATTEMPTS
 
 
-def _get_provider():
-    """Load the provider module for the currently active provider."""
-    name = state.get_provider()
+def _get_provider(name: str | None = None):
+    """Load a provider module by name, defaulting to the active provider."""
+    name = name or state.get_provider()
 
     if name == "openai":
         from services.llm.providers import openai
 
-        logger.debug("Using OpenAI provider")
         return openai
 
     if name == "anthropic":
         from services.llm.providers import anthropic
 
-        logger.debug("Using Anthropic provider")
         return anthropic
 
     if name == "groq":
         from services.llm.providers import groq
 
-        logger.debug("Using Groq provider")
         return groq
 
     # Default -- ollama
     from services.llm.providers import ollama
 
-    logger.debug("Using Ollama provider")
     return ollama
 
 
@@ -197,46 +193,48 @@ def check_llm() -> bool:
 
 
 def call_llm(
-    prompt: str, json_mode: bool = True, model: str | None = None
+    prompt: str,
+    json_mode: bool = True,
+    model: str | None = None,
+    task: str = "bulk",
 ) -> "LLMResult | None":
     """
-    Send prompt to the active LLM provider, with retry-backoff and Groq fallback.
+    Send prompt to the provider serving this task, with retries and Groq fallback.
 
     Flow:
-    1. If the primary provider is Groq, pace the call against the TPM rate limit.
-    2. Try the primary provider up to _MAX_ATTEMPTS times with exponential backoff.
-    3. If primary exhausts all retries, fall through to Groq as cheap fallback
-       (unless primary IS Groq -- no point falling back to yourself).
-    4. If Groq also fails, return a degraded LLMResult with text=None rather
-       than raising an exception. The caller decides how to handle degradation.
+    1. Resolve task -> (provider, model). Tasks route independently, so bulk work
+       can run on a cheap model at one vendor while generation runs on another.
+    2. If that provider is Groq, pace the call against the TPM rate limit.
+    3. Try it up to _MAX_ATTEMPTS times with exponential backoff.
+    4. If it exhausts all retries, fall through to Groq as cheap fallback
+       (unless it IS Groq -- no point falling back to yourself).
+    5. If Groq also fails, return a degraded LLMResult with text=None rather
+       than raising. The caller decides how to handle degradation.
 
     No blanket prompt truncation is applied -- each provider has its own
-    large context window (OpenAI gpt-4o-mini: 128k, Groq llama-3.1-8b: 128k,
-    Ollama: model-dependent). Callers that build very large prompts should trim
+    large context window. Callers that build very large prompts should trim
     at the call site with domain-specific knowledge about what to keep.
-
-    Groq calls (both primary and fallback) are paced against the tokens-per-minute
-    rate limit before sending, so rapid successive calls sleep automatically
-    rather than burning 429 round-trips.
 
     Args:
         prompt (str): Prompt text
         json_mode (bool): When True (default), providers are asked to emit
-            strictly valid JSON (OpenAI/Groq response_format, Ollama format).
-            Every current caller parses JSON; pass False for free-text output.
-            JSON mode requires an OBJECT root - prompts must not ask for a
-            bare array.
-        model (str | None): Override the active model for this call. Used by the
-            extractors, which run on a stronger model than the rest of the
-            pipeline. The Groq fallback always uses its own model.
+            strictly valid JSON (OpenAI/Groq response_format, Ollama format,
+            Anthropic assistant prefill). Every current caller parses JSON;
+            pass False for free-text output. JSON mode requires an OBJECT root -
+            prompts must not ask for a bare array.
+        model (str | None): Force a specific model, bypassing task routing.
+        task (str): "bulk" (default) for work that runs in loops - one JD
+            extraction per fetched job, one relevance call per 30 titles - or
+            "quality" for low-volume work the user reads, sends to an employer,
+            or that decides a single job's score. See task_models in config.yaml.
 
     Returns:
         LLMResult | None: Typed result. Check result.degraded and result.text
                           before using the response.
     """
-    provider = _get_provider()
-    provider_name = state.get_provider()
-    model = model or state.get_model()
+    provider_name, task_model = state.resolve_task(task)
+    provider = _get_provider(provider_name)
+    model = model or task_model
 
     logger.debug(
         "Calling %s (%s) - prompt %d chars",

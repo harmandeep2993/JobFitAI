@@ -17,7 +17,6 @@ This costs one LLM call, so it is opt-in: the Analyser uses it, the job-matching
 pipeline (which scores hundreds of jobs per run) does not.
 """
 
-from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm, parse_json_response
 
@@ -105,7 +104,7 @@ def judge_coverage(resume: dict, jd: dict) -> tuple[float | None, list, list, li
         bullets="\n".join(f"- {b}" for b in bullets),
     )
 
-    _res = call_llm(prompt, model=state.get_quality_model())
+    _res = call_llm(prompt, task="quality")
     data = parse_json_response(_res.text) if (_res and _res.text) else None
     verdicts = data.get("verdicts") if isinstance(data, dict) else None
 

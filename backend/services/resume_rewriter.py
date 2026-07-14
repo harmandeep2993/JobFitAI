@@ -17,7 +17,6 @@ import re
 from collections import defaultdict
 
 from repositories import resume_repo
-from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm
 
@@ -309,7 +308,7 @@ Return ONLY JSON, one object per item:
     logger.info(
         "improve_resume: sending %d items to LLM for user=%s", len(items), user_id
     )
-    _res = call_llm(prompt, model=state.get_quality_model())
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if not response:

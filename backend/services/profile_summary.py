@@ -98,11 +98,19 @@ def generate_summary(resume_json, jd_json, results):
             return "strong"
         return "moderate" if score >= 40 else "weak"
 
-    # Experience is a gate, not a score: report whether the bar is cleared.
+    # Experience is a gate, not a score. Report RELEVANT years: a career changer
+    # with five years in another field does not have five years of what this
+    # employer asked for, and the summary must not imply otherwise.
+    relevant_years = exp_gate.get("candidate_years", candidate_years)
     if not required_years:
         exp_lbl = "no explicit requirement stated"
-    elif candidate_years >= required_years:
+    elif relevant_years >= required_years:
         exp_lbl = f"meets the {required_years}+ years required"
+    elif relevant_years < candidate_years:
+        exp_lbl = (
+            f"only {relevant_years:g} of {candidate_years:g} years are in "
+            f"roles matching this job; {required_years}+ required"
+        )
     else:
         exp_lbl = f"below the {required_years}+ years required"
 
@@ -113,7 +121,8 @@ def generate_summary(resume_json, jd_json, results):
 
 ROLE: {role}
 OVERALL FIT: {overall_fit}
-CANDIDATE EXPERIENCE: {candidate_years} years ({exp_lbl} alignment)
+CANDIDATE EXPERIENCE: {candidate_years} years total, {relevant_years:g} relevant to this role ({exp_lbl})
+IMPORTANT: when stating years of experience, cite the RELEVANT years, not the total. Never imply unrelated experience counts toward this role.
 MATCHED REQUIRED SKILLS: {matched_skills}
 MISSING REQUIRED SKILLS: {missing_skills}
 MISSING PREFERRED SKILLS: {missing_pref}

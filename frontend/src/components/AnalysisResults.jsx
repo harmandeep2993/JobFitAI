@@ -146,6 +146,31 @@ function GatesPanel({ gates }) {
           </li>
         ))}
       </ul>
+
+      {/* Which past roles actually counted toward this job, and which did not */}
+      {gates?.experience?.roles?.length > 0 && gates.experience.total_years > gates.experience.candidate_years && (
+        <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(217,119,6,0.2)' }}>
+          <div className="text-[11px] font-semibold text-t3 uppercase tracking-wide mb-2">
+            Which roles count toward this job
+          </div>
+          <ul className="space-y-1.5">
+            {gates.experience.roles.map((r, i) => (
+              <li key={i} className="flex items-center gap-2 text-[12px]">
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded-sm flex-shrink-0"
+                  style={r.relevant
+                    ? { background: 'rgba(22,163,74,0.1)', color: '#16a34a' }
+                    : { background: 'rgba(var(--t3) / 0.12)', color: 'rgb(var(--t3))' }}>
+                  {r.relevant ? 'Counts' : 'Different field'}
+                </span>
+                <span className="text-t1 truncate">{r.title}</span>
+                {r.company && <span className="text-t3 truncate">· {r.company}</span>}
+                <span className="ml-auto text-t2 flex-shrink-0">{r.years}y</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <p className="text-[11.5px] text-t3 mt-2.5">
         These are not counted in the score - they are pass/fail filters a recruiter applies before reading your resume.
       </p>

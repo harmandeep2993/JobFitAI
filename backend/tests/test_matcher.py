@@ -110,7 +110,9 @@ def test_certifications_none_when_jd_empty():
 
 def test_total_experience_years_is_fte_weighted():
     """Part-time work must not count as full years, and concurrent roles once."""
-    from services.extractors.resume_extractor import _total_experience_years
+    from services.matcher.experience import (
+        total_experience_years as _total_experience_years,
+    )
 
     # 2 years as a working student (20h/week) is 1.0 FTE year, not 2.
     ws_only = [
@@ -197,15 +199,60 @@ def test_parse_required_years():
     assert parse_required_years([]) is None
 
 
-def test_experience_gate_compares_actual_years():
-    jd = {"experience_requirements": ["5+ years of machine learning engineering"]}
-    gate = check_experience_gate(RESUME, jd)  # resume has 2 years
+def test_experience_gate_uses_relevant_years_not_total():
+    """A career changer's years in another field must not clear this job's bar."""
+    from services.matcher.gates import relevant_experience
+
+    changer = {
+        "experience_entries": [
+            {
+                "title": "Mechanical Engineer",
+                "employment_type": "full-time",
+                "start_date": "01/2018",
+                "end_date": "01/2023",
+                "responsibilities": ["Designed CAD assemblies", "Ran FEA simulations"],
+            },
+            {
+                "title": "ML Engineer",
+                "employment_type": "full-time",
+                "start_date": "02/2023",
+                "end_date": "05/2024",
+                "responsibilities": ["Built models in Python with PyTorch on AWS"],
+            },
+        ],
+        "meta": {"total_experience_years": 6.3},
+    }
+    jd = {
+        "required_skills": ["python", "pytorch", "aws", "machine learning"],
+        "experience_requirements": ["5+ years of machine learning engineering"],
+    }
+
+    years, roles = relevant_experience(changer, jd)
+    # Only the ML role demonstrates the JD's skills
+    assert years < 2.0, f"irrelevant years leaked into the total: {years}"
+    assert [r["relevant"] for r in roles] == [False, True]
+
+    gate = check_experience_gate(changer, jd)
     assert gate["required_years"] == 5
-    assert gate["candidate_years"] == 2
+    assert gate["total_years"] == 6.3
+    assert gate["candidate_years"] < 2.0
+    # 6.3 total would have passed; 1.3 relevant must not
     assert gate["met"] is False
 
-    senior = {**RESUME, "meta": {"total_experience_years": 8}}
-    assert check_experience_gate(senior, jd)["met"] is True
+    # A genuine 8-year ML engineer clears the same bar
+    veteran = {
+        "experience_entries": [
+            {
+                "title": "ML Engineer",
+                "employment_type": "full-time",
+                "start_date": "01/2016",
+                "end_date": "01/2024",
+                "responsibilities": ["Built models in Python with PyTorch on AWS"],
+            }
+        ],
+        "meta": {"total_experience_years": 8},
+    }
+    assert check_experience_gate(veteran, jd)["met"] is True
 
     # JD states no years -> no gate at all
     assert check_experience_gate(RESUME, {"experience_requirements": []}) is None

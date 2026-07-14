@@ -11,7 +11,6 @@ import re
 
 from services.prompts import get_resume_prompt
 from core.config import RESUME_MAX_CHARS
-from core import state
 from core.logger import get_logger
 from services.llm.caller import call_llm, parse_json_response
 
@@ -330,9 +329,9 @@ def extract_resume(resume_text: str) -> dict:
         resume_text = resume_text[:RESUME_MAX_CHARS]
 
     prompt = get_resume_prompt(resume_text)
-    # Extraction runs on the provider's strongest configured model: every
-    # score downstream is only as good as this JSON.
-    _res = call_llm(prompt, model=state.get_extraction_model())
+    # Extraction is structured parsing, not reasoning: it wants speed and a
+    # deterministic temperature, both of which a reasoning model gives up.
+    _res = call_llm(prompt)
     response = _res.text if (_res and _res.text) else None
     result = parse_json_response(response)
 

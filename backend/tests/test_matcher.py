@@ -156,17 +156,19 @@ def test_total_experience_years_is_fte_weighted():
     assert _total_experience_years(unknown) > 1.8
 
 
-def test_extraction_uses_the_configured_extraction_model(monkeypatch):
-    """Extraction may run on a stronger model than the rest of the pipeline."""
+def test_two_model_tiers(monkeypatch):
+    """Bulk work runs cheap; low-volume quality work may use a stronger model."""
     from core import state
 
     state.set_active("openai", None)  # no admin pin -> config decides
-    assert state.get_extraction_model() == "gpt-5-mini"
+    # Bulk: one JD extraction per fetched job, hundreds of relevance calls
     assert state.get_model() == "gpt-4o-mini"
+    # Quality: summary, ATS rewrite, coverage judge - read or sent by the user
+    assert state.get_quality_model() == "gpt-5-mini"
 
-    # An explicit admin pin must win over the config default
+    # An explicit admin pin must win over both
     state.set_active("openai", "gpt-4o-mini")
-    assert state.get_extraction_model() == "gpt-4o-mini"
+    assert state.get_quality_model() == "gpt-4o-mini"
     state.set_active("openai", None)
 
 

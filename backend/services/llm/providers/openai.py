@@ -59,6 +59,17 @@ def check() -> bool:
         return False
 
 
+# Reasoning tokens are invisible in the response but are charged against
+# max_completion_tokens. Without extra headroom the model can consume the entire
+# budget deliberating and return nothing at all.
+REASONING_TOKEN_HEADROOM = 8000
+
+# Our tasks are structured extraction and bounded judgement, not open-ended
+# problem solving. Low effort keeps latency and reasoning-token spend sane while
+# still using the stronger model.
+REASONING_EFFORT = "low"
+
+
 def _is_reasoning_model(model: str) -> bool:
     """True for OpenAI reasoning models, which take different request params."""
     m = (model or "").lower()
@@ -91,8 +102,17 @@ def call(prompt, model: str | None = None, json_mode: bool = True):
     # The reasoning-model family (gpt-5*, o1*, o3*) takes different parameters:
     # it rejects max_tokens in favour of max_completion_tokens, and only accepts
     # the default temperature. Sending the chat-model params returns a 400.
+    #
+    # Critically, max_completion_tokens is a budget for REASONING PLUS output.
+    # Passing the chat-model budget straight through starves the answer: the
+    # model spends the whole allowance thinking and returns an empty string with
+    # finish_reason=length. So give reasoning its own headroom on top of the
+    # output budget, and cap how much of it the model may burn.
     if _is_reasoning_model(use_model):
-        payload["max_completion_tokens"] = LLM_MAX_OUTPUT_TOKENS
+        payload["max_completion_tokens"] = (
+            LLM_MAX_OUTPUT_TOKENS + REASONING_TOKEN_HEADROOM
+        )
+        payload["reasoning_effort"] = REASONING_EFFORT
     else:
         payload["temperature"] = LLM_TEMPERATURE
         payload["max_tokens"] = LLM_MAX_OUTPUT_TOKENS

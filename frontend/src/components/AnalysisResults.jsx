@@ -68,6 +68,31 @@ function ScoreBar({ label, value }) {
   )
 }
 
+// === Rich text ===
+// The summary prompt asks the LLM to mark key terms with <strong>...</strong>.
+// React escapes raw HTML - correctly, since this text comes from an LLM and must
+// never be injected as markup - so the tags would otherwise render literally.
+// Parse the marker ourselves and emit real elements. Only <strong> is ever
+// produced; any other tag the model invents stays harmless plain text.
+const STRONG_RE = /<strong>([\s\S]*?)<\/strong>/gi
+
+function RichText({ text }) {
+  if (typeof text !== 'string') return null
+  const parts = []
+  let last = 0
+  let m
+  STRONG_RE.lastIndex = 0
+  while ((m = STRONG_RE.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    parts.push(
+      <strong key={`${m.index}-s`} className="font-semibold text-t1">{m[1]}</strong>
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return <>{parts}</>
+}
+
 // === Keyword chip ===
 const CHIP_STYLES = {
   matched: { background: 'rgba(22,163,74,0.08)',  borderColor: 'rgba(22,163,74,0.25)',  color: '#16a34a' },
@@ -214,7 +239,14 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
               <div className="flex-1 min-w-0">
                 <SectionLabel>Profile summary</SectionLabel>
                 <p className="text-[13px] text-t2 leading-relaxed">
-                  {Array.isArray(result.summary.profile) ? result.summary.profile.join(' ') : result.summary.profile}
+                  {/* Sentences, so joining reads naturally - but each may carry markup */}
+                  {(Array.isArray(result.summary.profile) ? result.summary.profile : [result.summary.profile])
+                    .map((s, i) => (
+                      <span key={i}>
+                        {i > 0 && ' '}
+                        <RichText text={s} />
+                      </span>
+                    ))}
                 </p>
               </div>
             )}
@@ -266,7 +298,7 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
                   <li key={i} className="flex items-start gap-2.5 text-[13px] text-t1">
                     <span className="w-4 h-4 rounded-full border flex items-center justify-center flex-shrink-0 mt-0.5"
                       style={{ background: s.bg, borderColor: s.bd, color: s.color }}>{s.icon}</span>
-                    {item}
+                    <span><RichText text={item} /></span>
                   </li>
                 ))}
               </ul>
@@ -279,9 +311,18 @@ export function ResultsPanel({ result, delta = null, footer = null }) {
         <Card>
           <CardBody>
             <SectionLabel>Recommended focus</SectionLabel>
-            <p className="text-[13px] text-t2 leading-relaxed">
-              {Array.isArray(result.summary.focus) ? result.summary.focus.join(' ') : result.summary.focus}
-            </p>
+            {/* Each item is a separate action - a joined paragraph reads as a run-on */}
+            <ul className="space-y-2">
+              {(Array.isArray(result.summary.focus) ? result.summary.focus : [result.summary.focus]).map((item, i) => (
+                <li key={i} className="flex items-start gap-2.5 text-[13px] text-t2 leading-relaxed">
+                  <span className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 mt-px text-[11px] font-bold"
+                    style={{ background: 'rgba(var(--accent) / 0.1)', color: 'rgb(var(--accent))' }}>
+                    {i + 1}
+                  </span>
+                  <span><RichText text={item} /></span>
+                </li>
+              ))}
+            </ul>
           </CardBody>
         </Card>
       )}

@@ -235,6 +235,42 @@ def test_responsibilities_excluded_without_llm_judge(monkeypatch):
     assert result["overall_score"] == 80.0
 
 
+def test_summary_consumes_match_output_without_keyerror(monkeypatch):
+    """generate_summary must survive the real match() shape.
+
+    Regression: it indexed breakdown["experience"], which no longer exists now
+    that experience is a gate, and crashed /api/analyze with KeyError after the
+    LLM calls had already been paid for. It must also tolerate None sections.
+    """
+    import services.profile_summary as ps
+
+    monkeypatch.setattr(
+        ps,
+        "call_llm",
+        lambda p, **k: type(
+            "R", (), {"text": '{"profile":[],"strengths":[],"gaps":[],"focus":[]}'}
+        )(),
+    )
+    monkeypatch.setattr(
+        engine, "judge_coverage", lambda r, j: (62.5, [], [], ["a duty"])
+    )
+
+    jd = {
+        "required_skills": ["python"],
+        "responsibilities": ["Develop models"],
+        "experience_requirements": ["5+ years of ML engineering"],
+        "job": {"title": "ML Engineer"},
+    }
+    results = engine.match(RESUME, jd, llm_judge=True)
+
+    # preferred_skills / certifications are None here - the summary must cope
+    assert results["section_scores"]["preferred_skills"] is None
+    assert "experience" not in results["section_scores"]
+
+    out = ps.generate_summary(RESUME, jd, results)
+    assert out is not None
+
+
 def test_engine_reports_partial_lists(monkeypatch):
     monkeypatch.setattr(
         engine,

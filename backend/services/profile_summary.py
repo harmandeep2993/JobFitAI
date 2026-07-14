@@ -76,7 +76,7 @@ def generate_summary(resume_json, jd_json, results):
     missing_skills = ", ".join(context["missing_skills"][:4]) or "none"
     missing_pref = ", ".join(context["missing_pref"][:3]) or "none"
     candidate_years = context["candidate_years"]
-    exp_score = context["breakdown"]["experience"]
+    required_years = context["required_years"]
     edu_score = context["breakdown"]["education"]
     resp_score = context["breakdown"]["responsibilities"]
     overall_fit = (
@@ -89,17 +89,24 @@ def generate_summary(resume_json, jd_json, results):
         else "significant gaps to close"
     )
 
-    exp_lbl = (
-        "strong"
-        if exp_score >= 70
-        else "moderate"
-        if exp_score >= 40
-        else "below target"
-    )
-    edu_lbl = "strong" if edu_score >= 70 else "moderate" if edu_score >= 40 else "weak"
-    resp_lbl = (
-        "strong" if resp_score >= 70 else "moderate" if resp_score >= 40 else "weak"
-    )
+    def _band(score: float | None) -> str:
+        """Label a section score; None means the JD said nothing about it."""
+        if score is None:
+            return "not specified in the JD"
+        if score >= 70:
+            return "strong"
+        return "moderate" if score >= 40 else "weak"
+
+    # Experience is a gate, not a score: report whether the bar is cleared.
+    if not required_years:
+        exp_lbl = "no explicit requirement stated"
+    elif candidate_years >= required_years:
+        exp_lbl = f"meets the {required_years}+ years required"
+    else:
+        exp_lbl = f"below the {required_years}+ years required"
+
+    edu_lbl = _band(edu_score)
+    resp_lbl = _band(resp_score)
 
     prompt = f"""You are generating a candidate-facing job fit analysis for JobsFitAI.
 

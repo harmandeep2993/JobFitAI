@@ -115,6 +115,7 @@ THRESHOLDS = config["matcher"]["thresholds"]
 # Job search - target roles + entry-level filtering
 _job_search = config.get("job_search", {})
 SEARCH_COUNTRY = _job_search.get("default_country", "de")
+SEARCH_COUNTRIES = _job_search.get("default_countries", [SEARCH_COUNTRY])
 SEARCH_PER_TITLE = _job_search.get("per_title_results", 200)
 MAX_EXPERIENCE_YEARS = _job_search.get("max_experience_years", 2)
 MAX_AGE_DAYS = _job_search.get("max_age_days", 45)

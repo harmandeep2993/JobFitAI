@@ -178,14 +178,59 @@ def check_experience_gate(resume: dict, jd: dict) -> dict | None:
 # roles accept strong juniors, and the years check below is the real bar.
 _SENIOR_JOB_LEVELS = {"senior", "lead", "principal", "staff", "director"}
 
+# Seniority stated WITHOUT a number - the common case a numeric parser misses.
+# EN and DE. "years of experience" with no digit implies more than a beginner
+# has; the entry override below rescues genuine entry phrasings.
+# [aä]e? matches a, ä, and the ae transliteration German postings often use
+# (mehrjaehrig). Same for the words below.
+_SENIORITY_PHRASE_RE = re.compile(
+    r"\b(several|multiple|proven|extensive|significant|substantial|solid|deep"
+    r"|demonstrated|strong track record|track record)\b[\w\s]*\b(experience|years)\b"
+    r"|\byears? of (professional |relevant |hands-on )?experience\b"
+    r"|\b(mehr|lang)j[aä]e?hrige?\b"
+    # einschlaegige is paired with Berufserfahrung/Kenntnisse in job ads and
+    # implies relevant experience on its own; no trailing boundary because
+    # "erfahrung" hides inside the compound "Berufserfahrung".
+    r"|\beinschl[aä]e?gige\b"
+    r"|\b(fundierte|nachweisliche|umfangreiche)\b[\w\s]*(erfahrung|kenntnisse)",
+    re.IGNORECASE,
+)
+
+# Explicit entry signals. When present, the role is entry level no matter what a
+# seniority phrase nearby says - "no prior experience", "erste Berufserfahrung",
+# "Berufseinsteiger", "graduates welcome".
+_ENTRY_PHRASE_RE = re.compile(
+    r"\b(no|without)\b[\w\s]*\b(prior |professional |work )?experience\b"
+    r"|\bentry[\s-]?level\b"
+    r"|\bfirst (job|role|professional experience)\b"
+    r"|\b(recent )?graduates? (are )?welcome\b"
+    r"|\bberufseinsteiger\b|\berste[rs]? berufserfahrung\b"
+    r"|\bkeine (berufs)?erfahrung\b|\bwillkommen\b",
+    re.IGNORECASE,
+)
+
+
+def _experience_text(jd: dict) -> str:
+    """The JD text most likely to carry an experience requirement.
+
+    experience_requirements is where the extractor puts requirement statements,
+    but a phrasing like "mehrjaehrige Berufserfahrung" sometimes lands in the
+    summary, so both are scanned.
+    """
+    parts = list(jd.get("experience_requirements") or [])
+    summary = (jd.get("job_summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    return " ".join(p for p in parts if isinstance(p, str))
+
 
 def jd_requires_seniority(jd: dict, max_entry_years: int) -> str | None:
     """Decide if an EXTRACTED JD is beyond entry level, using the JD's own data.
 
     This runs after scoring, when the full JD is available, so it is far more
     reliable than the title-only fetch gate: the title said "ML Engineer" but the
-    body says "5+ years" or job_level "senior". Deterministic, no LLM, and free
-    because the JD was already extracted for scoring.
+    body says "5+ years", job_level "senior", or "mehrjaehrige Berufserfahrung".
+    Deterministic, no LLM, and free because the JD was already extracted.
 
     Returns a short reason string when the role is beyond entry level, else None.
     """
@@ -194,9 +239,20 @@ def jd_requires_seniority(jd: dict, max_entry_years: int) -> str | None:
     if level in _SENIOR_JOB_LEVELS:
         return f"job level: {level}"
 
-    required = parse_required_years(jd.get("experience_requirements", []))
-    if required is not None and required > max_entry_years:
-        return f"requires {required}+ years"
+    text = _experience_text(jd)
+
+    # A stated number is authoritative: over the bar drops, at or under it keeps.
+    # Either way the phrase check must not second-guess a number that was given
+    # ("1 year of experience" is entry, not "years of experience" = senior).
+    required = parse_required_years([text])
+    if required is not None:
+        if required > max_entry_years:
+            return f"requires {required}+ years"
+        return None
+
+    # No number, but seniority stated in words - unless an entry phrase rescues it.
+    if _SENIORITY_PHRASE_RE.search(text) and not _ENTRY_PHRASE_RE.search(text):
+        return "experience stated without a number (e.g. 'several years')"
 
     return None
 

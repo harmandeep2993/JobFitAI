@@ -220,6 +220,48 @@ def test_jd_entry_gate_uses_extracted_data_not_title():
     )
 
 
+def test_jd_entry_gate_reads_experience_stated_without_a_number():
+    """Seniority is often stated in words, not digits - EN and DE."""
+    from services.matcher.gates import jd_requires_seniority
+
+    def jd(reqs, summary=""):
+        return {
+            "job": {"job_level": "not specified"},
+            "experience_requirements": reqs,
+            "job_summary": summary,
+        }
+
+    for phrase in [
+        "several years of experience",
+        "proven experience in machine learning",
+        "extensive experience with cloud platforms",
+        "mehrjaehrige Berufserfahrung",
+        "mehrjährige Berufserfahrung",
+        "einschlaegige Berufserfahrung erforderlich",
+        "fundierte Kenntnisse in Python",
+        "years of professional experience required",
+    ]:
+        assert jd_requires_seniority(jd([phrase]), 2), f"missed: {phrase}"
+
+    # The phrase can live in the summary rather than the requirements list
+    assert jd_requires_seniority(
+        jd([], "we want several years of hands-on experience"), 2
+    )
+
+    # Entry phrasings must survive, even next to the word "experience"
+    for phrase in [
+        "no prior experience required",
+        "erste Berufserfahrung von Vorteil",
+        "Berufseinsteiger willkommen",
+        "recent graduates welcome",
+        "entry-level position",
+        "keine Berufserfahrung noetig",
+    ]:
+        assert (
+            jd_requires_seniority(jd([phrase]), 2) is None
+        ), f"false positive: {phrase}"
+
+
 def test_seniority_detection_is_robust():
     """The deterministic net must catch how senior roles actually hide."""
     from services.job_relevance import title_is_senior

@@ -186,6 +186,40 @@ def test_reasoning_models_get_different_request_params():
 # === Gates: years and language level are pass/fail, never points ===
 
 
+def test_jd_entry_gate_uses_extracted_data_not_title():
+    """After scoring, the JD's own fields catch seniors the title hid."""
+    from services.matcher.gates import jd_requires_seniority
+
+    # Title said "ML Engineer" but the extracted JD asks for 5 years
+    assert jd_requires_seniority(
+        {
+            "job": {"job_level": "not specified"},
+            "experience_requirements": ["5+ years"],
+        },
+        2,
+    )
+    # job_level field alone is enough
+    assert jd_requires_seniority({"job": {"job_level": "senior"}}, 2)
+    assert jd_requires_seniority({"job": {"job_level": "lead"}}, 2)
+
+    # Genuine entry roles pass
+    assert (
+        jd_requires_seniority(
+            {"job": {"job_level": "junior"}, "experience_requirements": ["1+ years"]}, 2
+        )
+        is None
+    )
+    assert jd_requires_seniority({"job": {"job_level": "not specified"}}, 2) is None
+    # mid-level within the year bar is allowed - many accept strong juniors
+    assert (
+        jd_requires_seniority(
+            {"job": {"job_level": "mid-level"}, "experience_requirements": ["2 years"]},
+            2,
+        )
+        is None
+    )
+
+
 def test_seniority_detection_is_robust():
     """The deterministic net must catch how senior roles actually hide."""
     from services.job_relevance import title_is_senior

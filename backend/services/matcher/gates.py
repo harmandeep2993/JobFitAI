@@ -173,6 +173,34 @@ def check_experience_gate(resume: dict, jd: dict) -> dict | None:
     }
 
 
+# Seniority levels a 0-2 year candidate cannot realistically get, as named in
+# the JD's own job_level field. "mid-level" is deliberately allowed: many such
+# roles accept strong juniors, and the years check below is the real bar.
+_SENIOR_JOB_LEVELS = {"senior", "lead", "principal", "staff", "director"}
+
+
+def jd_requires_seniority(jd: dict, max_entry_years: int) -> str | None:
+    """Decide if an EXTRACTED JD is beyond entry level, using the JD's own data.
+
+    This runs after scoring, when the full JD is available, so it is far more
+    reliable than the title-only fetch gate: the title said "ML Engineer" but the
+    body says "5+ years" or job_level "senior". Deterministic, no LLM, and free
+    because the JD was already extracted for scoring.
+
+    Returns a short reason string when the role is beyond entry level, else None.
+    """
+    level = (jd.get("job") or {}).get("job_level", "")
+    level = str(level).strip().lower()
+    if level in _SENIOR_JOB_LEVELS:
+        return f"job level: {level}"
+
+    required = parse_required_years(jd.get("experience_requirements", []))
+    if required is not None and required > max_entry_years:
+        return f"requires {required}+ years"
+
+    return None
+
+
 def check_language_gates(resume: dict, jd: dict) -> list[dict]:
     """Check each language the JD requires against the candidate's level.
 

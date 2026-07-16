@@ -19,7 +19,7 @@ from services.fetchers import (
     fetch_bundesagentur_jobs,
 )
 from services.fetchers.job_enricher import fetch_full_description
-from services.matcher import match
+from services.matcher import gates, match
 from repositories import event_repo, match_repo
 from services import (
     job_relevance as relevance,
@@ -28,7 +28,7 @@ from services import (
     vector_store,
 )
 from core import state as session
-from core.config import MAX_AGE_DAYS
+from core.config import MAX_AGE_DAYS, MAX_EXPERIENCE_YEARS
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -420,6 +420,19 @@ def discover_and_score(
             has_jd = bool(
                 jd and (jd.get("required_skills") or jd.get("responsibilities"))
             )
+
+            # Post-score entry gate: the title got the job this far, but the
+            # extracted JD is the real evidence. If it says senior or asks for
+            # more years than an entry candidate has, drop it now - even though
+            # we already paid to score it. Better a wasted score than a senior
+            # role cluttering an entry-level list.
+            if entry_only and has_jd:
+                reason = gates.jd_requires_seniority(jd, MAX_EXPERIENCE_YEARS)
+                if reason:
+                    match_repo.delete(user_id, job.id)  # remove the pending row
+                    event_repo.mark_seen(job, user_id, "not_entry")
+                    logger.debug("   dropped (not entry: %s) | %s", reason, tag)
+                    continue
 
             if item and has_jd:
                 item["status"] = "scored"

@@ -16,20 +16,58 @@ from services.llm.caller import call_llm, parse_json_response
 
 logger = get_logger(__name__)
 
-# Deterministic seniority fallback. The LLM is the primary classifier; this
-# regex decides entry_level only when the LLM failed or skipped a title, and
-# acts as a safety net when an explicit seniority word contradicts the LLM
-# verdict. Covers German compounds like Teamleiter/Abteilungsleiterin.
-_SENIORITY_RE = re.compile(
-    r"\b(senior|sr\.?|lead|principal|staff|head|director|manager|architect)\b"
-    r"|\w*leiter(in)?\b",
+# Deterministic seniority detection. The LLM is inconsistent and sometimes skips
+# titles in a batch, so this is the layer that has to be robust: a title with any
+# explicit seniority marker is forced to non-entry regardless of the LLM verdict.
+#
+# The patterns are split by shape because a plain word list cannot express the
+# structural ones (level numbers, roman numerals), which are the most common way
+# a senior role hides from a keyword filter ("Engineer II", "SDE 3", "L5").
+_SENIORITY_PATTERNS = [
+    # Seniority words (EN + DE). \b keeps them from matching inside other words,
+    # except the -lead / -leiter compounds which are matched as suffixes.
+    r"\b(senior|sr\.?|lead|principal|staff|head|director|manager|managing"
+    r"|architect|expert|chief|vp|vice[\s-]?president|fellow|distinguished"
+    r"|experienced|erfahrene?r?)\b",
+    # German compounds: Teamleiter, Abteilungsleitung, Projektleitung, ...
+    r"\w*(leiter(in)?|leitung)\b",
+    # Compound leads with no space: teamlead, techlead.
+    r"\b\w+lead\b",
+    # German "mit Berufserfahrung" / "Berufserfahrung".
+    r"berufserfahrung",
+    # Level numbers, the sneakiest senior marker. A standalone roman numeral
+    # II-VI, or an L-level (L4, L5). Anchored so 'web3'/'s3'/'react18' do not
+    # trip it.
+    r"\b(ii|iii|iv|vi?)\b",
+    r"(?<![a-z0-9])l[3-9]\b",
+    # A bare digit is a level ONLY right after a role noun ("Engineer 3",
+    # "SDE 4"), never after a technology ("Python 3", "Angular 2") - which is a
+    # version, not a seniority.
+    r"\b(engineer|developer|scientist|analyst|programmer|architect|consultant"
+    r"|sde|swe|entwickler)\s+[2-9]\b",
+]
+_SENIORITY_RE = re.compile("|".join(_SENIORITY_PATTERNS), re.IGNORECASE)
+
+# Guard against the level-number rule firing on an entry title that happens to
+# carry a number ("Junior Engineer, 2 openings" style). An explicit entry word
+# always wins - a role cannot be both junior and senior.
+_ENTRY_WORDS_RE = re.compile(
+    r"\b(junior|jr\.?|entry|graduate|trainee|intern|working[\s-]?student"
+    r"|werkstudent|azubi|apprentice|berufseinsteiger|absolvent|praktikant)\b",
     re.IGNORECASE,
 )
 
 
 def title_is_senior(title: str) -> bool:
-    """True when the job title carries an explicit seniority marker."""
-    return bool(_SENIORITY_RE.search(title or ""))
+    """True when the job title carries an explicit seniority marker.
+
+    An explicit entry-level word (junior, graduate, intern...) overrides the
+    structural level patterns, so 'Junior Engineer 2' is not misread as senior.
+    """
+    t = title or ""
+    if _ENTRY_WORDS_RE.search(t):
+        return False
+    return bool(_SENIORITY_RE.search(t))
 
 
 # JobsFitAI serves IT & Computer Science job seekers only - the gate judges

@@ -186,6 +186,50 @@ def test_reasoning_models_get_different_request_params():
 # === Gates: years and language level are pass/fail, never points ===
 
 
+def test_seniority_detection_is_robust():
+    """The deterministic net must catch how senior roles actually hide."""
+    from services.job_relevance import title_is_senior
+
+    senior = [
+        "Software Engineer II",
+        "Data Scientist III",
+        "ML Engineer IV",
+        "Software Engineer 3",
+        "L5 Software Engineer",
+        "SDE II",
+        "Teamlead Data Engineering",
+        "TechLead Backend",
+        "Expert Data Scientist",
+        "Chief Data Officer",
+        "VP Engineering",
+        "Vice President of Data",
+        "Distinguished Engineer",
+        "Softwareentwickler (m/w/d) mit Berufserfahrung",
+        "Erfahrener ML Engineer",
+        "Abteilungsleitung IT",
+        "Senior ML Engineer",
+        "Staff Engineer",
+    ]
+    for t in senior:
+        assert title_is_senior(t), f"leaked senior title: {t}"
+
+    # Version numbers are not seniority, and an explicit entry word always wins.
+    entry = [
+        "Junior ML Engineer",
+        "ML Engineer (m/w/d)",
+        "Machine Learning Engineer",
+        "Web3 Developer",
+        "Python 3 Developer",
+        "Angular 2 Developer",
+        "S3 Data Pipeline Engineer",
+        "Junior Engineer II",
+        "Werkstudent KI",
+        "Azubi Fachinformatiker",
+    ]
+    for t in entry:
+        assert not title_is_senior(t), f"false positive on entry title: {t}"
+
+
 def test_parse_required_years():
     assert parse_required_years(["3+ years of experience"]) == 3
     assert parse_required_years(["at least 5 years in ML"]) == 5

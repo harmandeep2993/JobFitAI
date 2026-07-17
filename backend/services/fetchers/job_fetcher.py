@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from langdetect import DetectorFactory, detect
 from langdetect.lang_detect_exception import LangDetectException
 
+from core.config import MAX_AGE_DAYS
 from core.logger import get_logger
 
 load_dotenv()
@@ -153,6 +154,14 @@ def _fetch_page(query: str, location: str, country: str, page: int) -> tuple[lis
         "what": query,
         "where": location,
         "results_per_page": ADZUNA_PAGE_SIZE,
+        # Newest first, capped at our recency window. Without these, Adzuna
+        # returns relevance order with no age limit - so a fresh posting ranked
+        # below the page window was never seen, while stale jobs we would
+        # discard anyway wasted slots in it. With them, repeated runs walk the
+        # newest jobs and the seen_jobs dedup makes each run cost only the
+        # genuinely new ones.
+        "sort_by": "date",
+        "max_days_old": MAX_AGE_DAYS,
         "content-type": "application/json",
     }
 

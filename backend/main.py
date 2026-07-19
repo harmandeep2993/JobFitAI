@@ -39,6 +39,7 @@ from core.config import (
     SUPPORTED_EXTENSIONS,
 )
 from core.logger import get_logger
+from repositories import event_repo as event_store
 from repositories import resume_repo as resume_store
 from repositories import settings_repo as settings_store
 from services.extractors.resume_extractor import extract_resume
@@ -405,6 +406,8 @@ async def _auto_fetch_loop() -> None:
                             user_id
                         ),
                         entry_only=entry_only,
+                        # Seen-stop paging: no job in the age window is skipped.
+                        seen_ids=event_store.seen_ids(user_id),
                     )
                     return discover_and_score(
                         jobs,

@@ -163,6 +163,7 @@ def fetch_combined(
     arbeitnow_limit: int = 100,
     bundesagentur_limit: int = 500,
     entry_only: bool = False,
+    seen_ids: set[str] | None = None,
 ) -> list[Job]:
     """Pull jobs from all sources across one or more countries and merge.
 
@@ -186,8 +187,15 @@ def fetch_combined(
 
     adzuna: list[Job] = []
     for code in countries:
+        # With seen_ids, each query walks the date-sorted pool until it reaches
+        # already-processed jobs - no job in the age window is skipped, and
+        # repeat runs only pay for pages containing something new.
         adzuna += fetch_adzuna_multi(
-            queries, location=location, country=code, per_title=per_query
+            queries,
+            location=location,
+            country=code,
+            per_title=per_query,
+            seen_ids=seen_ids,
         )
 
     arbeitnow: list[Job] = []

@@ -183,6 +183,56 @@ def test_reasoning_models_get_different_request_params():
     assert not _is_reasoning_model("gpt-4o-mini")
 
 
+# === Adzuna seen-stop pagination ===
+
+
+def test_adzuna_seen_stop_walks_until_nothing_new(monkeypatch):
+    """First run walks the whole pool; later runs stop at the first fully-seen
+    page, so no job in the window is ever skipped and repeats stay cheap."""
+    from services.fetchers import job_fetcher
+
+    # A 115-job date-sorted pool served in 50/50/15 pages.
+    pool = [{"id": str(i), "title": f"Job {i}", "created": ""} for i in range(115)]
+
+    calls = []
+
+    def fake_fetch_page(query, location, country, page):
+        calls.append(page)
+        start = (page - 1) * 50
+        return pool[start : start + 50], len(pool)
+
+    monkeypatch.setattr(job_fetcher, "_fetch_page", fake_fetch_page)
+    monkeypatch.setattr(job_fetcher, "ADZUNA_APP_ID", "x")
+    monkeypatch.setattr(job_fetcher, "ADZUNA_APP_KEY", "x")
+
+    # Run 1: nothing seen -> the entire pool is fetched (3 pages).
+    calls.clear()
+    run1 = job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=set())
+    assert len(run1) == 115
+    assert calls == [1, 2, 3]
+
+    # Run 2: everything seen -> one page downloaded, then stop.
+    calls.clear()
+    seen = {j.id for j in run1}
+    job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=seen)
+    assert calls == [1], "a fully-seen first page must stop pagination"
+
+    # Run 3: 10 new jobs appear at the top -> page 1 has new content, page 2 is
+    # fully seen, stop there. Nothing below is ever missed.
+    calls.clear()
+    newer = [{"id": f"n{i}", "title": f"New {i}", "created": ""} for i in range(10)]
+    pool[:0] = newer
+    run3 = job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=seen)
+    assert calls == [1, 2]
+    assert sum(1 for j in run3 if j.id not in seen) == 10
+
+    # Budget mode (seen_ids=None) is unchanged: one page for results=50.
+    calls.clear()
+    run4 = job_fetcher.fetch_adzuna_jobs(query="q", location="", results=50)
+    assert len(run4) == 50
+    assert calls == [1]
+
+
 # === Gates: years and language level are pass/fail, never points ===
 
 

@@ -117,6 +117,8 @@ _job_search = config.get("job_search", {})
 SEARCH_COUNTRY = _job_search.get("default_country", "de")
 SEARCH_COUNTRIES = _job_search.get("default_countries", [SEARCH_COUNTRY])
 SEARCH_PER_TITLE = _job_search.get("per_title_results", 200)
+# Ceiling on Adzuna pages walked per query in seen-stop mode (50 jobs/page).
+MAX_PAGES_PER_QUERY = _job_search.get("max_pages_per_query", 10)
 MAX_EXPERIENCE_YEARS = _job_search.get("max_experience_years", 2)
 MAX_AGE_DAYS = _job_search.get("max_age_days", 45)
 AUTO_FETCH_MINUTES = _job_search.get("auto_fetch_minutes", 0)

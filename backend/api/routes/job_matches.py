@@ -184,6 +184,9 @@ async def api_match_run(
                 arbeitnow_limit=settings_store.get_arbeitnow_limit(user_id),
                 bundesagentur_limit=settings_store.get_bundesagentur_limit(user_id),
                 entry_only=entry_only_flag,
+                # Enables seen-stop paging: walk each query until nothing is new,
+                # so no job in the age window is skipped between runs.
+                seen_ids=event_store.seen_ids(user_id),
             )
             discover_and_score(
                 jobs,

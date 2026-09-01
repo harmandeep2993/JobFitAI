@@ -14,9 +14,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from core import state as session
+from core.logger import get_logger
 from core.security import create_token, decode_token, hash_password, verify_password
 from models import user as user_model
-from schemas.auth import ChangePasswordRequest, LoginRequest, RegisterRequest
+from repositories import resume_repo as resume_store
+from schemas.auth import (
+    ChangePasswordRequest,
+    DeleteAccountRequest,
+    LoginRequest,
+    RegisterRequest,
+)
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -149,7 +159,7 @@ async def register(body: RegisterRequest, request: Request) -> JSONResponse:
 
     hashed = hash_password(body.password)
     user = user_model.create(body.email, hashed)
-    token = create_token(user["id"], user["email"])
+    token = create_token(user["id"])
 
     return JSONResponse(
         {"token": token, "user_id": user["id"], "email": user["email"]}, status_code=201
@@ -163,7 +173,7 @@ async def login(body: LoginRequest, request: Request) -> JSONResponse:
     if not user or not verify_password(body.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="invalid_credentials")
 
-    token = create_token(user["id"], user["email"])
+    token = create_token(user["id"])
     return JSONResponse({"token": token, "user_id": user["id"], "email": user["email"]})
 
 
@@ -178,6 +188,35 @@ async def change_password(
         raise HTTPException(status_code=401, detail="wrong_current_password")
 
     user_model.set_password(user["id"], hash_password(body.new_password))
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/account")
+async def delete_account(
+    body: DeleteAccountRequest,
+    user: dict = Depends(get_current_user),
+) -> JSONResponse:
+    """Permanently erase the account and every piece of data derived from it.
+
+    Requires the current password: a stolen token alone must not be able to
+    destroy someone's account. Deletion is irreversible - resume files are
+    removed from disk and all rows are hard-deleted, not flagged.
+    """
+    full = user_model.get_by_email(user["email"])
+    if not full or not verify_password(body.password, full["hashed_password"]):
+        raise HTTPException(status_code=401, detail="wrong_current_password")
+
+    user_id = user["id"]
+
+    # Delete resume files from disk BEFORE the rows that hold their paths.
+    for record in resume_store.list_all(user_id):
+        resume_store.delete(user_id, record["id"])
+
+    # Drop the in-memory job-matching session so nothing survives in RAM.
+    session.clear_user(user_id)
+
+    user_model.delete_account(user_id)
+    logger.info("Account erased for user %s", user_id)
     return JSONResponse({"ok": True})
 
 

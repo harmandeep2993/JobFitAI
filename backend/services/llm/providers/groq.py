@@ -28,13 +28,8 @@ _MODEL = GROQ_CONFIG.get("model", "llama-3.1-8b-instant")
 
 
 def has_key() -> bool:
+    """Whether an API key is configured. Never exposes any part of the key."""
     return bool(_API_KEY)
-
-
-def get_key_hint() -> str:
-    if not _API_KEY:
-        return ""
-    return "****" + _API_KEY[-4:] if len(_API_KEY) > 4 else "****"
 
 
 def check() -> bool:

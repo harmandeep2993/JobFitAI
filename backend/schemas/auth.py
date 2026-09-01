@@ -29,6 +29,12 @@ class ChangePasswordRequest(BaseModel):
         return v
 
 
+class DeleteAccountRequest(BaseModel):
+    """Password confirmation for irreversible account erasure."""
+
+    password: str
+
+
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str

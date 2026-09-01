@@ -121,14 +121,19 @@ export default function ATS() {
     } finally { setLoading('') }
   }
 
-  async function downloadDocx() {
+  async function downloadDocx(layout = 'single') {
     if (!optimResult?.resume) return
-    const res = await apiFetch('/api/ats/docx', { method: 'POST', body: JSON.stringify({ resume: optimResult.resume }) })
+    const res = await apiFetch('/api/ats/docx', {
+      method: 'POST',
+      body: JSON.stringify({ resume: optimResult.resume, layout }),
+    })
     if (!res?.ok) { toast('Download failed', 'error'); return }
     const blob = await res.blob()
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = 'ats_optimised_resume.docx'
+    a.download = layout === 'two_column'
+      ? 'resume_two_column.docx'
+      : 'resume_ats_optimised.docx'
     a.click()
     URL.revokeObjectURL(a.href)
   }
@@ -298,7 +303,14 @@ export default function ATS() {
               <SectionLabel>Optimised Resume</SectionLabel>
               <div className="flex gap-2">
                 <button onClick={copyText} className="btn-secondary h-7 px-3 text-[12.5px]">Copy text</button>
-                <button onClick={downloadDocx} className="btn-primary h-7 px-3 text-[12.5px]">Download DOCX</button>
+                <button onClick={() => downloadDocx('two_column')} className="btn-secondary h-7 px-3 text-[12.5px]"
+                  title="Two columns via Word column layout - never a table, so ATS still reads it in order">
+                  Two-column DOCX
+                </button>
+                <button onClick={() => downloadDocx('single')} className="btn-primary h-7 px-3 text-[12.5px]"
+                  title="Single column - the safest layout for any ATS">
+                  Download DOCX
+                </button>
               </div>
             </div>
 
@@ -313,6 +325,35 @@ export default function ATS() {
                     Still missing: {optimResult.coverage_after.missing.slice(0, 5).join(', ')}
                   </span>
                 )}
+              </div>
+            )}
+
+            {/* Anything the writer claimed that the source resume does not back up.
+                Shown so the user can trust what is left - and see what would have
+                been a lie on a document they sign their name to. */}
+            {optimResult.removed_unsupported?.length > 0 && (
+              <div className="rounded-lg border p-3.5"
+                style={{ background: 'rgba(22,163,74,0.05)', borderColor: 'rgba(22,163,74,0.25)' }}>
+                <div className="flex items-center gap-2 mb-1.5">
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 1.5l5.5 2.5v4c0 3-2.2 5-5.5 6-3.3-1-5.5-3-5.5-6v-4L8 1.5z"/><path d="M6 8l1.5 1.5L10.5 6.5"/>
+                  </svg>
+                  <span className="text-[12.5px] font-semibold" style={{ color: '#16a34a' }}>
+                    Accuracy check: removed {optimResult.removed_unsupported.length} unsupported claim{optimResult.removed_unsupported.length > 1 ? 's' : ''}
+                  </span>
+                </div>
+                <p className="text-[12px] text-t2 leading-relaxed mb-2">
+                  The AI suggested these, but your resume does not evidence them - so they were stripped.
+                  Everything below is backed by your real experience.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {optimResult.removed_unsupported.map((r, i) => (
+                    <span key={i} className="px-2 py-0.5 text-[11.5px] rounded-sm line-through"
+                      style={{ background: 'rgb(var(--surface-2))', color: 'rgb(var(--t3))' }}>
+                      {r}
+                    </span>
+                  ))}
+                </div>
               </div>
             )}
 

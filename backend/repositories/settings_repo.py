@@ -10,7 +10,12 @@ preferences are fully isolated.
 import json
 
 from core import database as db
-from core.config import AUTO_FETCH_MINUTES, SEARCH_COUNTRY, TARGET_TITLES
+from core.config import (
+    AUTO_FETCH_MINUTES,
+    SEARCH_COUNTRIES,
+    SEARCH_COUNTRY,
+    TARGET_TITLES,
+)
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -112,7 +117,7 @@ def set_titles(user_id: str, titles: list[str]) -> None:
 
 def get_countries(user_id: str) -> list[str]:
     """Return Adzuna country codes for this user."""
-    return _get(user_id, "countries", [SEARCH_COUNTRY])
+    return _get(user_id, "countries", list(SEARCH_COUNTRIES))
 
 
 def set_countries(user_id: str, names: list[str]) -> None:

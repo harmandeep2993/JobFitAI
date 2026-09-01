@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 from langdetect import DetectorFactory, detect
 from langdetect.lang_detect_exception import LangDetectException
 
+from core.config import MAX_AGE_DAYS, MAX_PAGES_PER_QUERY
 from core.logger import get_logger
 
 load_dotenv()
@@ -153,6 +154,14 @@ def _fetch_page(query: str, location: str, country: str, page: int) -> tuple[lis
         "what": query,
         "where": location,
         "results_per_page": ADZUNA_PAGE_SIZE,
+        # Newest first, capped at our recency window. Without these, Adzuna
+        # returns relevance order with no age limit - so a fresh posting ranked
+        # below the page window was never seen, while stale jobs we would
+        # discard anyway wasted slots in it. With them, repeated runs walk the
+        # newest jobs and the seen_jobs dedup makes each run cost only the
+        # genuinely new ones.
+        "sort_by": "date",
+        "max_days_old": MAX_AGE_DAYS,
         "content-type": "application/json",
     }
 
@@ -196,16 +205,29 @@ def fetch_adzuna_jobs(
     location: str = "berlin",
     results: int = 50,
     country: str = "de",
+    seen_ids: set[str] | None = None,
 ) -> list[Job]:
     """
-    Fetch job postings from the Adzuna API, paginating automatically when
-    the total result count exceeds one page (50 jobs).
+    Fetch job postings from the Adzuna API, paginating automatically.
+
+    Two modes, decided by ``seen_ids``:
+
+    Budget mode (seen_ids=None): fetch up to ``results`` jobs and stop - the
+    original behaviour.
+
+    Seen-stop mode (seen_ids given): walk the date-sorted pool page by page
+    until a page contains ONLY already-seen ids. Because results are sorted
+    newest-first, everything past a fully-seen page was covered by an earlier
+    run, so no job in the window is ever skipped: the first run walks the whole
+    pool (bounded by MAX_PAGES_PER_QUERY) and each later run pays only for
+    pages containing something new.
 
     Args:
         query (str):    Search terms (Adzuna ``what`` parameter).
         location (str): Location filter (Adzuna ``where`` parameter).
-        results (int):  Maximum jobs to return (capped at MAX_RESULTS_PER_QUERY).
+        results (int):  Budget-mode cap (ignored in seen-stop mode).
         country (str):  Adzuna country code used in the request path.
+        seen_ids (set | None): Job ids this user has already processed.
 
     Returns:
         list[Job]: Normalized jobs. Empty list if credentials are missing
@@ -215,11 +237,17 @@ def fetch_adzuna_jobs(
         logger.error("Missing ADZUNA_APP_ID / ADZUNA_APP_KEY - cannot fetch jobs")
         return []
 
-    want = min(results, MAX_RESULTS_PER_QUERY)
+    exhaustive = seen_ids is not None
+    want = (
+        MAX_PAGES_PER_QUERY * ADZUNA_PAGE_SIZE
+        if exhaustive
+        else min(results, MAX_RESULTS_PER_QUERY)
+    )
     all_raw: list[dict] = []
     page = 1
+    total = 0
 
-    while len(all_raw) < want:
+    while len(all_raw) < want and page <= MAX_PAGES_PER_QUERY:
         raw_jobs, total = _fetch_page(query, location, country, page)
 
         if not raw_jobs:
@@ -234,8 +262,20 @@ def fetch_adzuna_jobs(
             len(all_raw),
         )
 
-        # Stop if we have enough or there are no more pages.
-        if len(all_raw) >= want or len(all_raw) >= total:
+        if exhaustive:
+            # Newest-first ordering: a page with nothing new means every older
+            # page was already covered by a previous run.
+            unseen = sum(1 for j in raw_jobs if str(j.get("id", "")) not in seen_ids)
+            if unseen == 0:
+                logger.info(
+                    "Adzuna '%s': page %d fully seen - stopping (no gaps below)",
+                    query,
+                    page,
+                )
+                break
+
+        # Stop when the pool is exhausted (or budget-mode has enough).
+        if len(all_raw) >= total or (not exhaustive and len(all_raw) >= want):
             break
 
         page += 1
@@ -256,6 +296,7 @@ def fetch_adzuna_multi(
     location: str = "",
     country: str = "de",
     per_title: int = MAX_RESULTS_PER_QUERY,
+    seen_ids: set[str] | None = None,
 ) -> list[Job]:
     """
     Run one Adzuna search per target title and merge the results.
@@ -268,7 +309,9 @@ def fetch_adzuna_multi(
         titles (list[str]): Role phrases to search for, one query each.
         location (str):     Location filter.
         country (str):      Adzuna country code.
-        per_title (int):    Results requested per title.
+        per_title (int):    Results requested per title (budget mode only).
+        seen_ids (set | None): Already-processed ids; enables seen-stop mode,
+            which walks each query's date-sorted pool until nothing is new.
 
     Returns:
         list[Job]: Unique jobs across all title searches.
@@ -280,7 +323,11 @@ def fetch_adzuna_multi(
         if i:
             time.sleep(0.3)  # gentle throttle to avoid Adzuna rate-limit (503)
         for job in fetch_adzuna_jobs(
-            query=title, location=location, results=per_title, country=country
+            query=title,
+            location=location,
+            results=per_title,
+            country=country,
+            seen_ids=seen_ids,
         ):
             key = job.id or job.url
             if key and key not in seen:

@@ -14,8 +14,9 @@ import json
 from datetime import datetime, timezone
 
 from core import database
-from core.config import PROVIDER_CONFIGS
+from core.config import PROVIDER_CONFIGS, TASK_MODELS
 from core.logger import get_logger
+from services.llm.providers import anthropic as _anthropic_p
 from services.llm.providers import groq as _groq_p
 from services.llm.providers import openai as _openai_p
 
@@ -28,7 +29,7 @@ logger = get_logger(__name__)
 sched_last_ref: dict[str, float] = {}
 
 # Providers the router has a working path for.
-SUPPORTED_PROVIDERS = ["openai", "groq", "ollama"]
+SUPPORTED_PROVIDERS = ["openai", "anthropic", "groq", "ollama"]
 
 # Default provider used until changed at runtime.
 # OpenAI gpt-4o-mini has far higher rate limits than Groq's free tier
@@ -87,6 +88,60 @@ def get_model() -> str:
     if _state["model"]:
         return _state["model"]
     return PROVIDER_CONFIGS.get(_state["provider"], {}).get("model", "")
+
+
+def _provider_module(name: str):
+    """Return the provider module for a name, or None when unknown."""
+    return {
+        "openai": _openai_p,
+        "anthropic": _anthropic_p,
+        "groq": _groq_p,
+    }.get(name)
+
+
+def resolve_task(task: str) -> tuple[str, str]:
+    """Resolve a task name to the (provider, model) that should serve it.
+
+    Tasks are routed independently, so cheap bulk work can run on one vendor
+    while generation runs on another - see task_models in config.yaml.
+
+    Resolution order:
+      1. An explicit admin pin in Settings wins for everything. If someone
+         selected a model in the UI, honour it rather than silently calling a
+         different one.
+      2. The task's configured provider+model, provided that provider's API key
+         is actually present.
+      3. The active provider's default model. A task pointed at a provider with
+         no key degrades to a working one instead of failing every request.
+    """
+    active = _state["provider"]
+
+    if _state["model"]:
+        return active, _state["model"]
+
+    cfg = TASK_MODELS.get(task) or {}
+    provider = (cfg.get("provider") or "").strip()
+    model = (cfg.get("model") or "").strip()
+
+    if provider and model:
+        mod = _provider_module(provider)
+        # Ollama needs no key; every other provider does.
+        if provider == "ollama" or (mod and mod.has_key()):
+            return provider, model
+        logger.warning(
+            "Task '%s' is routed to %s but its API key is missing - "
+            "falling back to %s",
+            task,
+            provider,
+            active,
+        )
+
+    return active, PROVIDER_CONFIGS.get(active, {}).get("model", "")
+
+
+def get_quality_model() -> str:
+    """Model id for the quality tier (kept for callers that only need the name)."""
+    return resolve_task("quality")[1]
 
 
 def set_active(provider: str, model: str | None = None) -> None:
@@ -177,6 +232,17 @@ def has_resume(user_id: str) -> bool:
     return get_resume(user_id) is not None
 
 
+def clear_user(user_id: str) -> None:
+    """Drop this user's in-memory resume state (used on account erasure).
+
+    Only clears RAM - the caller deletes the persisted rows. Without this, the
+    extracted resume JSON would survive account deletion until restart.
+    """
+    _resume.pop(user_id, None)
+    _resume_loaded.discard(user_id)
+    sched_last_ref.pop(user_id, None)
+
+
 def _flatten_skills(skills) -> list:
     if isinstance(skills, list):
         return [s for s in skills if isinstance(s, str)]
@@ -227,10 +293,13 @@ def resume_info(user_id: str) -> dict:
 def provider_catalog() -> list[dict]:
     """Return the selectable providers for the UI.
 
-    Each entry: {name, default_model, models[], needs_key, has_key, key_hint}.
+    Each entry: {name, default_model, models[], needs_key, has_key}.
+    has_key is a boolean only - no fragment of any API key is ever sent to a
+    client, not even a masked suffix.
     """
     _meta = {
         "openai": {"needs_key": True, "mod": _openai_p},
+        "anthropic": {"needs_key": True, "mod": _anthropic_p},
         "groq": {"needs_key": True, "mod": _groq_p},
         "ollama": {"needs_key": False, "mod": None},
     }
@@ -247,7 +316,6 @@ def provider_catalog() -> list[dict]:
                 "models": cfg.get("models", []),
                 "needs_key": meta.get("needs_key", False),
                 "has_key": mod.has_key() if mod else True,
-                "key_hint": mod.get_key_hint() if mod else "",
             }
         )
     return catalog

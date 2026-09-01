@@ -126,6 +126,8 @@ def extract_jd(jd_text: str) -> dict:
         jd_text = jd_text[:JD_MAX_CHARS]
 
     prompt = get_jd_prompt(jd_text)
+    # Extraction is structured parsing, not reasoning - and the fetch pipeline
+    # runs one of these per job, so it must stay fast and cheap.
     _res = call_llm(prompt)
     response = _res.text if (_res and _res.text) else None
     result = parse_json_response(response)

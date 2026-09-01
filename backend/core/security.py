@@ -57,18 +57,23 @@ def verify_password(plain: str, hashed: str) -> bool:
     return _pwd_context.verify(plain, hashed)
 
 
-def create_token(user_id: str, email: str) -> str:
+def create_token(user_id: str) -> str:
     """Create a signed HS256 JWT that expires in 30 days.
 
+    The payload carries the user id only. A JWT is not encrypted - anyone
+    holding it can read its claims - and the client stores it in
+    localStorage, so no personal data (email, name) goes inside it. The
+    server resolves the user from `sub`; clients that need the email call
+    GET /api/auth/me over an authenticated request.
+
     Args:
-        user_id: The user's UUID stored in the `sub` claim.
-        email:   Stored in the payload for convenience.
+        user_id: The user's UUID, stored in the `sub` claim.
 
     Returns:
         Encoded JWT string ready to send to the client.
     """
     expire = datetime.now(timezone.utc) + timedelta(days=_TOKEN_EXPIRE_DAYS)
-    payload = {"sub": user_id, "email": email, "exp": expire}
+    payload = {"sub": user_id, "exp": expire}
     return jwt.encode(payload, _SECRET, algorithm=_ALGORITHM)
 
 

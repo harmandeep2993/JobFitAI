@@ -20,3 +20,5 @@ class AtsOptimiseRequest(BaseModel):
 
 class AtsDocxRequest(BaseModel):
     resume: dict
+    # "single" (safest for ATS) or "two_column" (Word columns, never a table)
+    layout: Optional[str] = "single"

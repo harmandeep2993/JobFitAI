@@ -308,7 +308,7 @@ Return ONLY JSON, one object per item:
     logger.info(
         "improve_resume: sending %d items to LLM for user=%s", len(items), user_id
     )
-    _res = call_llm(prompt)
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if not response:

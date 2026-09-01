@@ -184,6 +184,9 @@ async def api_match_run(
                 arbeitnow_limit=settings_store.get_arbeitnow_limit(user_id),
                 bundesagentur_limit=settings_store.get_bundesagentur_limit(user_id),
                 entry_only=entry_only_flag,
+                # Enables seen-stop paging: walk each query until nothing is new,
+                # so no job in the age window is skipped between runs.
+                seen_ids=event_store.seen_ids(user_id),
             )
             discover_and_score(
                 jobs,
@@ -449,7 +452,8 @@ async def api_score_jd(
         if not jd_json:
             return None, None
         try:
-            return jd_json, match(state.get_resume(user_id), jd_json)
+            # Single user-requested job - worth the LLM coverage judgement.
+            return jd_json, match(state.get_resume(user_id), jd_json, llm_judge=True)
         except Exception as exc:
             logger.exception("match() failed in score-jd: %s", exc)
             return None, None

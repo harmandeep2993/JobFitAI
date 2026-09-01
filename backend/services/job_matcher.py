@@ -8,6 +8,7 @@ Each job costs one JD-extraction LLM call; the resume is extracted once
 """
 
 import json as _json
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -19,7 +20,7 @@ from services.fetchers import (
     fetch_bundesagentur_jobs,
 )
 from services.fetchers.job_enricher import fetch_full_description
-from services.matcher import match
+from services.matcher import gates, match
 from repositories import event_repo, match_repo
 from services import (
     job_relevance as relevance,
@@ -28,7 +29,7 @@ from services import (
     vector_store,
 )
 from core import state as session
-from core.config import MAX_AGE_DAYS
+from core.config import MAX_AGE_DAYS, MAX_EXPERIENCE_YEARS
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -95,6 +96,18 @@ def _score_one(job: Job, resume_json: dict) -> dict | None:
 # Progress of the current/last run per user, polled by the dashboard for live updates.
 _run_statuses: dict[str, dict] = {}
 
+# Guards the check-and-set on a user's "running" flag. begin_run() (manual
+# route) and discover_and_score() (scheduler + any direct caller) both claim
+# it, so two runs can never pass the gate at once. Without this the scheduler
+# could start a scoring loop while a manual run's loop is still live - both
+# then increment the same status["checked"], which runs past status["total"]
+# (the "688 of 446 checked" symptom).
+_status_lock = threading.Lock()
+
+# Phases during which a scoring loop is actively stepping through jobs. A
+# second run entering while the status sits in one of these is a duplicate.
+_ACTIVE_SCORING_PHASES = ("classifying", "scoring", "stopping")
+
 
 def _default_status() -> dict:
     """Return a blank run-status dict."""
@@ -114,18 +127,21 @@ def get_run_status(user_id: str) -> dict:
 
 
 def begin_run(user_id: str) -> bool:
-    """Mark a run as starting for this user. Returns False if one is already running."""
-    if _run_statuses.get(user_id, {}).get("running"):
-        return False
-    _run_statuses[user_id] = {
-        "running": True,
-        "phase": "fetching",
-        "checked": 0,
-        "scored": 0,
-        "total": 0,
-        "cancel": False,
-    }
-    return True
+    """Claim the run slot for this user. Returns False if one is already running."""
+    # Atomic check-and-set: two callers racing here (manual fetch + scheduler)
+    # must not both see "not running" and proceed.
+    with _status_lock:
+        if _run_statuses.get(user_id, {}).get("running"):
+            return False
+        _run_statuses[user_id] = {
+            "running": True,
+            "phase": "fetching",
+            "checked": 0,
+            "scored": 0,
+            "total": 0,
+            "cancel": False,
+        }
+        return True
 
 
 def request_stop(user_id: str) -> bool:
@@ -163,6 +179,7 @@ def fetch_combined(
     arbeitnow_limit: int = 100,
     bundesagentur_limit: int = 500,
     entry_only: bool = False,
+    seen_ids: set[str] | None = None,
 ) -> list[Job]:
     """Pull jobs from all sources across one or more countries and merge.
 
@@ -186,8 +203,15 @@ def fetch_combined(
 
     adzuna: list[Job] = []
     for code in countries:
+        # With seen_ids, each query walks the date-sorted pool until it reaches
+        # already-processed jobs - no job in the age window is skipped, and
+        # repeat runs only pay for pages containing something new.
         adzuna += fetch_adzuna_multi(
-            queries, location=location, country=code, per_title=per_query
+            queries,
+            location=location,
+            country=code,
+            per_title=per_query,
+            seen_ids=seen_ids,
         )
 
     arbeitnow: list[Job] = []
@@ -308,8 +332,26 @@ def discover_and_score(
         titles: The user's target titles - used to decide whether student
             posts (werkstudent/praktikum) were explicitly asked for.
     """
-    status = _run_statuses.setdefault(user_id, _default_status())
-    status["running"] = True  # idempotent - begin_run may have set this already
+    # Claim the run slot. begin_run() already set this for the manual route and
+    # the scheduler calls begin_run() too; this guard is the backstop. If a
+    # scoring loop is already stepping through jobs for this user, a second
+    # entry here would share status["checked"] with it - refuse instead.
+    with _status_lock:
+        existing = _run_statuses.get(user_id)
+        if existing and existing.get("phase") in _ACTIVE_SCORING_PHASES:
+            logger.warning(
+                "discover_and_score already active for user %s (phase=%s) - dropping duplicate run",
+                user_id,
+                existing["phase"],
+            )
+            return {
+                "checked": 0,
+                "scored": 0,
+                "skipped": True,
+                "results": match_repo.get_all(user_id),
+            }
+        status = _run_statuses.setdefault(user_id, _default_status())
+        status["running"] = True  # idempotent - begin_run set this for the manual route
 
     resume_json = session.get_resume(user_id)
     if not resume_json:
@@ -420,6 +462,19 @@ def discover_and_score(
             has_jd = bool(
                 jd and (jd.get("required_skills") or jd.get("responsibilities"))
             )
+
+            # Post-score entry gate: the title got the job this far, but the
+            # extracted JD is the real evidence. If it says senior or asks for
+            # more years than an entry candidate has, drop it now - even though
+            # we already paid to score it. Better a wasted score than a senior
+            # role cluttering an entry-level list.
+            if entry_only and has_jd:
+                reason = gates.jd_requires_seniority(jd, MAX_EXPERIENCE_YEARS)
+                if reason:
+                    match_repo.delete(user_id, job.id)  # remove the pending row
+                    event_repo.mark_seen(job, user_id, "not_entry")
+                    logger.debug("   dropped (not entry: %s) | %s", reason, tag)
+                    continue
 
             if item and has_jd:
                 item["status"] = "scored"

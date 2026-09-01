@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 
 from core import uploads
-from core.config import JD_MAX_CHARS, MAX_FILE_SIZE_MB, SUPPORTED_EXTENSIONS
+from core.config import JD_MAX_CHARS, MAX_FILE_SIZE_MB, SUPPORTED_EXTENSIONS, WEIGHTS
 from core.logger import get_logger
 from services.extractors import extract_all
 from services.matcher.engine import match
@@ -35,7 +35,7 @@ ALLOWED_EXTENSIONS: Set[str] = SUPPORTED_EXTENSIONS
 MAX_FILE_MB: int = MAX_FILE_SIZE_MB
 
 # Bump when match() scoring semantics change - keys the analysis cache.
-_SCORING_VERSION = "v2"
+_SCORING_VERSION = "v4"
 
 _PREVIEW_TYPES = {
     ".pdf": "application/pdf",
@@ -160,6 +160,98 @@ def _build_summary(raw: dict | str | None) -> dict:
     }
 
 
+def _build_job_context(jd_json: dict) -> dict:
+    """What the user is being scored against - extracted but never surfaced."""
+    job = jd_json.get("job") or {}
+    return {
+        "title": job.get("title", ""),
+        "company": job.get("company", ""),
+        "location": job.get("location", ""),
+        "work_mode": job.get("work_mode", ""),
+        "employment_type": job.get("employment_type", ""),
+        "job_level": job.get("job_level", ""),
+        "summary": jd_json.get("job_summary", ""),
+    }
+
+
+def _build_score_math(results: dict) -> list[dict]:
+    """Show how the overall score was actually built.
+
+    Each active section contributes score x (weight / active weight). Sections
+    the JD said nothing about carry no weight and are reported as excluded, so
+    the number is defensible instead of magic.
+    """
+    ss = results.get("section_scores") or {}
+    active = {s: v for s, v in ss.items() if v is not None}
+    total_weight = sum(WEIGHTS.get(s, 0) for s in active) or 1.0
+
+    rows = []
+    for section, score in ss.items():
+        weight = WEIGHTS.get(section, 0)
+        if score is None:
+            rows.append(
+                {
+                    "section": section,
+                    "score": None,
+                    "weight": weight,
+                    "points": 0.0,
+                    "excluded": True,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "section": section,
+                    "score": score,
+                    "weight": round(weight / total_weight, 3),
+                    "points": round(score * weight / total_weight, 1),
+                    "excluded": False,
+                }
+            )
+    return rows
+
+
+def _build_skill_impact(results: dict) -> list[dict]:
+    """Rank missing required skills by how much each would raise the score.
+
+    Pure arithmetic on the same weights the engine used: re-score the required
+    section as if one missing skill were matched, then recompute the weighted
+    overall. Turns a list of gaps into a prioritised action plan at no cost.
+    """
+    ss = results.get("section_scores") or {}
+    req_score = ss.get("required_skills")
+    missing = results.get("missing_required") or []
+    if req_score is None or not missing:
+        return []
+
+    matched = len(results.get("matched_required") or [])
+    total = matched + len(missing)
+    if total == 0:
+        return []
+
+    active = {s: v for s, v in ss.items() if v is not None}
+    total_weight = sum(WEIGHTS.get(s, 0) for s in active) or 1.0
+    current = results.get("overall_score", 0)
+
+    # Adding one missing skill moves it from missing to matched.
+    improved_req = (matched + 1) / total * 100
+    delta = round(
+        (improved_req - req_score) * WEIGHTS.get("required_skills", 0) / total_weight, 1
+    )
+
+    # Every missing required skill is worth the same gain, so order by the
+    # user's real constraint: how hard it is to add. We cannot know that, so
+    # keep JD order and let the UI show the shared gain.
+    return [
+        {
+            "skill": skill,
+            "gain": delta,
+            "new_score": round(min(100.0, current + delta), 1),
+        }
+        for skill in missing
+    ]
+
+
 def _build_breakdown(results: dict) -> dict:
     """Map match() output into a per-section breakdown for the API response.
 
@@ -191,9 +283,7 @@ def _build_breakdown(results: dict) -> dict:
             "matched": [],
             "missing": [],
         },
-        "experience": {"score": ss.get("experience"), "matched": [], "missing": []},
         "education": {"score": ss.get("education"), "matched": [], "missing": []},
-        "languages": {"score": ss.get("languages"), "matched": [], "missing": []},
         "certifications": {
             "score": ss.get("certifications"),
             "matched": [],
@@ -267,7 +357,9 @@ async def api_analyze(
         if not resume_json or not jd_json:
             return resume_json, jd_json, None, None
 
-        results = match(resume_json, jd_json)
+        # llm_judge: the Analyser scores one job for one user, so it can afford
+        # the LLM responsibility-coverage call that bulk job scoring cannot.
+        results = match(resume_json, jd_json, llm_judge=True)
         summary = generate_summary(resume_json, jd_json, results)
         return resume_json, jd_json, results, summary
 
@@ -298,6 +390,25 @@ async def api_analyze(
         "label": results.get("label", ""),
         "summary": _build_summary(summary),
         "breakdown": _build_breakdown(results),
+        # What the user is actually being scored against
+        "job": _build_job_context(jd_json),
+        # How the number was built, section by section
+        "score_math": _build_score_math(results),
+        # Prioritised action plan: what each missing skill is worth
+        "skill_impact": _build_skill_impact(results),
+        # Where each skill was found (listed / proven in a bullet / related)
+        "evidence": {
+            "required": results.get("required_evidence") or {},
+            "preferred": results.get("preferred_evidence") or {},
+        },
+        # Hard requirements (years, language level): warnings, never points
+        "gates": results.get("gates") or {},
+        # Per-duty verdicts from the LLM coverage judge
+        "duties": {
+            "demonstrated": results.get("demonstrated_duties") or [],
+            "partial": results.get("partial_duties") or [],
+            "missing": results.get("missing_duties") or [],
+        },
         "keywords": {
             "matched": results.get("matched_required") or [],
             "partial": results.get("partial_required") or [],

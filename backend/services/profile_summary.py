@@ -35,6 +35,8 @@ def generate_summary(resume_json, jd_json, results):
     # candidate/job objects, meta.total_experience_years).
     candidate_years = resume_json.get("meta", {}).get("total_experience_years", 0)
     section_scores = results.get("section_scores", {})
+    gates = results.get("gates") or {}
+    exp_gate = gates.get("experience") or {}
 
     context = {
         "score": results.get("overall_score", 0),
@@ -44,11 +46,12 @@ def generate_summary(resume_json, jd_json, results):
         "matched_pref": results.get("matched_preferred", []),
         "missing_pref": results.get("missing_preferred", []),
         "candidate_years": candidate_years,
-        "required_years": 0,  # JD schema has no explicit required-years field
+        # Parsed from the JD by the experience gate; 0 when the JD states none
+        "required_years": exp_gate.get("required_years", 0),
+        "missing_duties": results.get("missing_duties", []),
         "breakdown": {
             "required_skills": section_scores.get("required_skills", 0),
             "responsibilities": section_scores.get("responsibilities", 0),
-            "experience": section_scores.get("experience", 0),
             "education": section_scores.get("education", 0),
         },
         "candidate": {
@@ -73,7 +76,7 @@ def generate_summary(resume_json, jd_json, results):
     missing_skills = ", ".join(context["missing_skills"][:4]) or "none"
     missing_pref = ", ".join(context["missing_pref"][:3]) or "none"
     candidate_years = context["candidate_years"]
-    exp_score = context["breakdown"]["experience"]
+    required_years = context["required_years"]
     edu_score = context["breakdown"]["education"]
     resp_score = context["breakdown"]["responsibilities"]
     overall_fit = (
@@ -86,23 +89,39 @@ def generate_summary(resume_json, jd_json, results):
         else "significant gaps to close"
     )
 
-    exp_lbl = (
-        "strong"
-        if exp_score >= 70
-        else "moderate"
-        if exp_score >= 40
-        else "below target"
-    )
-    edu_lbl = "strong" if edu_score >= 70 else "moderate" if edu_score >= 40 else "weak"
-    resp_lbl = (
-        "strong" if resp_score >= 70 else "moderate" if resp_score >= 40 else "weak"
-    )
+    def _band(score: float | None) -> str:
+        """Label a section score; None means the JD said nothing about it."""
+        if score is None:
+            return "not specified in the JD"
+        if score >= 70:
+            return "strong"
+        return "moderate" if score >= 40 else "weak"
+
+    # Experience is a gate, not a score. Report RELEVANT years: a career changer
+    # with five years in another field does not have five years of what this
+    # employer asked for, and the summary must not imply otherwise.
+    relevant_years = exp_gate.get("candidate_years", candidate_years)
+    if not required_years:
+        exp_lbl = "no explicit requirement stated"
+    elif relevant_years >= required_years:
+        exp_lbl = f"meets the {required_years}+ years required"
+    elif relevant_years < candidate_years:
+        exp_lbl = (
+            f"only {relevant_years:g} of {candidate_years:g} years are in "
+            f"roles matching this job; {required_years}+ required"
+        )
+    else:
+        exp_lbl = f"below the {required_years}+ years required"
+
+    edu_lbl = _band(edu_score)
+    resp_lbl = _band(resp_score)
 
     prompt = f"""You are generating a candidate-facing job fit analysis for JobsFitAI.
 
 ROLE: {role}
 OVERALL FIT: {overall_fit}
-CANDIDATE EXPERIENCE: {candidate_years} years ({exp_lbl} alignment)
+CANDIDATE EXPERIENCE: {candidate_years} years total, {relevant_years:g} relevant to this role ({exp_lbl})
+IMPORTANT: when stating years of experience, cite the RELEVANT years, not the total. Never imply unrelated experience counts toward this role.
 MATCHED REQUIRED SKILLS: {matched_skills}
 MISSING REQUIRED SKILLS: {missing_skills}
 MISSING PREFERRED SKILLS: {missing_pref}
@@ -128,7 +147,7 @@ Rules:
 - No percentages, no em-dashes, no emojis, no score numbers
 - Be specific - name actual skills, not vague phrases"""
 
-    _res = call_llm(prompt)
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if response and len(response.strip()) > 20:
@@ -193,7 +212,7 @@ def generate_swot(resume_json, jd_json, results):
 ROLE: {role_title}
 OVERALL SCORE: {score}/100
 CANDIDATE EXPERIENCE: {candidate_years} years
-SECTION SCORES: required_skills={_fmt_score(section_scores.get('required_skills'))}, responsibilities={_fmt_score(section_scores.get('responsibilities'))}, experience={_fmt_score(section_scores.get('experience'))}, education={_fmt_score(section_scores.get('education'))}
+SECTION SCORES: required_skills={_fmt_score(section_scores.get('required_skills'))}, responsibilities={_fmt_score(section_scores.get('responsibilities'))}, education={_fmt_score(section_scores.get('education'))}
 
 MATCHED REQUIRED SKILLS: {', '.join(matched_req[:8]) or 'none'}
 MISSING REQUIRED SKILLS:  {', '.join(missing_req[:8]) or 'none'}
@@ -218,7 +237,7 @@ Return ONLY valid JSON, nothing else:
   "threats":       ["phrase 1", "phrase 2", "phrase 3"]
 }}"""
 
-    _res = call_llm(prompt)
+    _res = call_llm(prompt, task="quality")
     response = _res.text if (_res and _res.text) else None
 
     if response:

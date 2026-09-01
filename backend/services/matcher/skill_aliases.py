@@ -113,6 +113,48 @@ def build_evidence_corpus(resume: dict) -> str:
     return _WS_RE.sub(" ", " ".join(parts).lower())
 
 
+def build_evidence_lines(resume: dict) -> list[str]:
+    """Return the resume's individual lines, original casing preserved.
+
+    build_evidence_corpus flattens everything into one blob, which answers
+    "is this skill present?" but not "where?". Keeping the lines separate lets
+    the UI quote the exact bullet a skill was found in, which is what turns a
+    keyword chip into evidence the user can act on.
+    """
+    lines: list[str] = []
+    for entry in resume.get("experience_entries", []) or []:
+        for bullet in entry.get("responsibilities", []) or []:
+            if isinstance(bullet, str) and bullet.strip():
+                lines.append(bullet.strip())
+    for project in resume.get("projects", []) or []:
+        desc = (project.get("description") or "").strip()
+        title = (project.get("title") or "").strip()
+        if desc or title:
+            lines.append(f"{title}: {desc}".strip(": ").strip())
+    for pub in resume.get("publications", []) or []:
+        if isinstance(pub, str) and pub.strip():
+            lines.append(pub.strip())
+    # The summary/objective is deliberately excluded. "Searching for roles in
+    # AI/ML" is a statement of intent, not evidence of having done the work, and
+    # quoting it back as proof of a skill is both weak and embarrassing. A skill
+    # that appears only there is still found by the corpus search (so the ATS
+    # advice still fires); it just cannot be cited as experience.
+    return lines
+
+
+def find_evidence_line(skill: str, lines: list[str]) -> str | None:
+    """Return the first resume line that evidences the skill, or None."""
+    canonical = normalize_skill(skill)
+    if not canonical or canonical in AMBIGUOUS_IN_TEXT:
+        return None
+    for form in _surface_forms(canonical):
+        pattern = r"(?<![\w+#])" + re.escape(form) + r"(?![\w+#])"
+        for line in lines:
+            if re.search(pattern, line.lower()):
+                return line
+    return None
+
+
 def found_in_corpus(skill: str, corpus: str) -> bool:
     """True when the skill (or any alias of it) appears in the resume text.
 

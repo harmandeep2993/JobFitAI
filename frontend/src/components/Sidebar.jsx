@@ -11,16 +11,6 @@ const NAV_ITEMS = [
     ),
   },
   {
-    id: 'ats',
-    label: 'ATS Check',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M8.5 1.5L2 5v4.5c0 3.5 2.8 6.2 6.5 7.5 3.7-1.3 6.5-4 6.5-7.5V5L8.5 1.5z"/>
-        <polyline points="6,10 8,12 12.5,7.5"/>
-      </svg>
-    ),
-  },
-  {
     id: 'matches',
     label: 'Job Matches',
     icon: (

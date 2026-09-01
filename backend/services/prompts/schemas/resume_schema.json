@@ -1,11 +1,7 @@
 {
   "candidate": {
-    "name": "<full name>",
     "title": "<professional title, e.g. data analyst, phd researcher>",
-    "location": "<city, country>",
-    "email": "<email address>",
-    "phone": "<phone number>",
-    "links": ["<linkedin, github, or portfolio url>"]
+    "location": "<city or region, for matching against job locations>"
   },
 
   "summary": "<professional summary, profile, or objective - verbatim, translated to English>",

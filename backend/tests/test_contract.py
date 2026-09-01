@@ -171,6 +171,132 @@ def test_ats_check_contract(client, auth, tmp_token):
     assert_keys(body["section_flags"][0], ["name", "found", "suggestion"])
 
 
+def test_ats_generation_strips_fabrications():
+    """The no-invention rule is enforced, not merely requested of the model."""
+    from services.ats import _verify_against_source
+
+    source = (
+        "Jane Doe | jane@example.com\n"
+        "WORK EXPERIENCE\nData Analyst, Acme GmbH (2021-2024)\n"
+        "- Built dashboards in Power BI and wrote SQL queries\n"
+        "- Deployed a churn model with Docker\n"
+        "SKILLS\nPython, SQL, Power BI, Docker"
+    )
+    hallucinated = {
+        "skills": ["Python", "SQL", "Docker", "Kubernetes", "Terraform"],
+        "experience": [
+            {
+                "title": "Data Analyst",
+                "company": "Acme GmbH",
+                "bullets": ["Built dashboards"],
+            },
+            {
+                "title": "Senior ML Engineer",
+                "company": "Google",
+                "bullets": ["Led a team of 8"],
+            },
+        ],
+    }
+    clean, removed = _verify_against_source(hallucinated, source)
+
+    # Skills the resume evidences survive; invented ones do not
+    assert set(clean["skills"]) == {"Python", "SQL", "Docker"}
+    assert any("Kubernetes" in r for r in removed)
+    assert any("Terraform" in r for r in removed)
+
+    # An entirely fabricated employer is dropped
+    assert len(clean["experience"]) == 1
+    assert clean["experience"][0]["company"] == "Acme GmbH"
+    assert any("Google" in r for r in removed)
+
+
+def test_ats_docx_includes_contact_header(client, auth):
+    """A resume with no name or email is not sendable, and ATS cannot route it."""
+    r = client.post(
+        "/api/ats/docx",
+        headers=auth,
+        json={
+            "resume": {
+                "contact": {
+                    "name": "Jane Doe",
+                    "email": "jane@example.com",
+                    "phone": "+49 123",
+                    "links": ["linkedin.com/in/jane"],
+                },
+                "summary": "Data analyst.",
+                "skills": ["Python"],
+                "experience": [],
+                "education": [],
+            }
+        },
+    )
+    assert r.status_code == 200
+
+    # A DOCX is a zip - read the real paragraphs back rather than the raw bytes
+    import io as _io
+
+    from docx import Document
+
+    doc = Document(_io.BytesIO(r.content))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Jane Doe" in text
+    assert "jane@example.com" in text
+    assert "+49 123" in text
+    assert "linkedin.com/in/jane" in text
+
+
+def test_ats_two_column_docx_uses_no_tables_and_reads_in_order(client, auth):
+    """Two columns via Word column layout, never a table.
+
+    A table builds a grid that ATS parsers read cell by cell, which is how
+    two-column resumes end up scrambled. Word columns are a rendering hint, so
+    the paragraphs stay in linear order and text extraction still works.
+    """
+    import io as _io
+
+    from docx import Document
+
+    resume = {
+        "contact": {"name": "Jane Doe", "email": "jane@example.com"},
+        "summary": "Data analyst.",
+        "skills": ["Python", "SQL"],
+        "experience": [
+            {
+                "title": "Data Analyst",
+                "company": "Acme GmbH",
+                "dates": "2021-2024",
+                "bullets": ["Built dashboards"],
+            }
+        ],
+        "education": [{"degree": "BSc", "institution": "TU Berlin", "year": "2020"}],
+    }
+    r = client.post(
+        "/api/ats/docx", headers=auth, json={"resume": resume, "layout": "two_column"}
+    )
+    assert r.status_code == 200
+
+    doc = Document(_io.BytesIO(r.content))
+    assert len(doc.tables) == 0, "two-column layout must not use a table"
+
+    lines = [p.text for p in doc.paragraphs if p.text.strip()]
+    text = "\n".join(lines)
+    # Contact survives, and every section is present under a standard heading
+    assert "Jane Doe" in text
+    for heading in ("Summary", "Skills", "Education", "Work Experience"):
+        assert heading in lines, f"missing ATS heading: {heading}"
+
+    # Reading order must stay linear: sidebar content, then the main column
+    assert lines.index("Skills") < lines.index("Work Experience")
+    assert lines.index("Data Analyst | Acme GmbH | 2021-2024") > lines.index(
+        "Work Experience"
+    )
+
+    r = client.post(
+        "/api/ats/docx", headers=auth, json={"resume": resume, "layout": "nonsense"}
+    )
+    assert r.status_code == 400
+
+
 def test_ats_docx_contract(client, auth):
     r = client.post(
         "/api/ats/docx",
@@ -479,6 +605,72 @@ def test_spa_catch_all_serves_client_routes(client):
     assert r.json()["error"] == "not_found"
 
 
+def test_delete_account_erases_all_user_data(client):
+    """GDPR erasure: wrong password is rejected; deletion removes every row."""
+    from core import database as db
+
+    email = "erase-me@example.com"
+    r = client.post(
+        "/api/auth/register", json={"email": email, "password": "testpass123"}
+    )
+    assert r.status_code == 201
+    body = r.json()
+    h = {"Authorization": f"Bearer {body['token']}"}
+    user_id = body["user_id"]
+
+    # Give the account some data to erase
+    client.post(
+        "/api/resumes/upload",
+        headers=h,
+        files={"file": ("cv.txt", RESUME_TEXT.encode(), "text/plain")},
+        data={"slot": "0"},
+    )
+    client.post(
+        "/api/match/filters", headers=h, json={"target_titles": ["ml engineer"]}
+    )
+
+    # A stolen token alone must not be enough to destroy the account
+    r = client.request(
+        "DELETE", "/api/auth/account", headers=h, json={"password": "wrong-password"}
+    )
+    assert r.status_code == 401
+
+    r = client.request(
+        "DELETE", "/api/auth/account", headers=h, json={"password": "testpass123"}
+    )
+    assert r.status_code == 200 and r.json()["ok"]
+
+    # Every per-user table is empty, and the account no longer authenticates
+    with db.connect() as conn:
+        for table in ("users", "resumes", "analyses", "matches", "user_settings"):
+            col = "id" if table == "users" else "user_id"
+            rows = conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE {col} = ?", (user_id,)
+            ).fetchone()["n"]
+            assert rows == 0, f"{table} still holds data after erasure"
+
+    assert client.get("/api/auth/me", headers=h).status_code == 401
+
+
+def test_jwt_carries_no_personal_data(client):
+    """The token sits in localStorage, so it must not contain the email."""
+    import json as _json
+    import base64
+
+    r = client.post(
+        "/api/auth/register",
+        json={"email": "claims@example.com", "password": "testpass123"},
+    )
+    token = r.json()["token"]
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    claims = _json.loads(base64.urlsafe_b64decode(payload_b64))
+
+    assert "sub" in claims
+    assert "email" not in claims, "email must not be a JWT claim"
+    assert "claims@example.com" not in _json.dumps(claims)
+
+
 def test_match_stop_contract(client, auth):
     """Stop endpoint responds ok with stopped=false when no run is active."""
     r = client.post("/api/match/stop", headers=auth)
@@ -565,3 +757,15 @@ def test_security_headers_present(client, auth):
     assert r.headers.get("x-content-type-options") == "nosniff"
     assert r.headers.get("x-frame-options") == "SAMEORIGIN"
     assert r.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+    # CSP locks scripts to our own origin: the JWT lives in localStorage, so an
+    # injected script is the realistic path to stealing it.
+    csp = r.headers.get("content-security-policy", "")
+    assert "script-src 'self'" in csp
+    assert "connect-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    # Fonts are the only third party the page may reach
+    assert "https://fonts.gstatic.com" in csp
+
+    # HSTS must NOT be sent in dev - it would pin localhost to https for a year
+    assert "strict-transport-security" not in r.headers

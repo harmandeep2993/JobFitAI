@@ -1,14 +1,21 @@
 # tests/test_matcher.py
 """
-Unit tests for the deterministic matcher: alias resolution, full-resume
-evidence search, graded skill credit, similarity calibration, and the
-None-sentinel handling for sections the JD says nothing about.
+Unit tests for the matcher.
 
-These tests load the local embedding model (a few seconds on first import)
-but make no network or LLM calls.
+Covers the deterministic layer (alias resolution, full-resume evidence search,
+graded skill credit, calibration, None-sentinel weighting) and the gates that
+replaced the experience and language scorers.
+
+These tests load the local embedding model (a few seconds on first import) but
+make no network or LLM calls - the responsibility-coverage judge is stubbed.
 """
 
 from services.matcher import engine
+from services.matcher.gates import (
+    check_experience_gate,
+    check_language_gates,
+    parse_required_years,
+)
 from services.matcher.skill_aliases import (
     build_evidence_corpus,
     found_in_corpus,
@@ -16,7 +23,6 @@ from services.matcher.skill_aliases import (
 )
 from services.matcher.scores.skills import score_required_skills
 from services.matcher.scores.certifications import score_certifications
-from services.matcher.scores.responsibilities import score_responsibilities
 from services.matcher.scoring_utils import calibrate_similarity
 
 
@@ -34,9 +40,13 @@ RESUME = {
     ],
     "projects": [],
     "education": [{"degree": "BSc", "field": "Computer Science"}],
-    "languages": [],
+    "languages": [{"language": "German", "proficiency": "B1"}],
     "certifications": [],
+    "meta": {"total_experience_years": 2},
 }
+
+
+# === Skills: aliases, evidence, graded credit ===
 
 
 def test_alias_normalization():
@@ -51,7 +61,7 @@ def test_evidence_corpus_finds_buried_skills():
     # In a bullet, not in the skills list
     assert found_in_corpus("docker", corpus)
     assert found_in_corpus("aws", corpus)
-    # 'java' must not match inside 'javascript'-like tokens or random text
+    # Must not match inside longer tokens or random text
     assert not found_in_corpus("java", corpus)
     # Ambiguous one-letter skills never match free text
     assert not found_in_corpus("r", corpus)
@@ -59,7 +69,7 @@ def test_evidence_corpus_finds_buried_skills():
 
 def test_required_skills_alias_and_evidence():
     jd = {"required_skills": ["Kubernetes", "Docker", "Python", "SQL"]}
-    score, matched, partial, missing = score_required_skills(RESUME, jd)
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, jd)
     # kubernetes via alias (k8s), docker+sql via evidence bullets, python direct
     assert "kubernetes" in matched
     assert "docker" in matched
@@ -71,14 +81,14 @@ def test_required_skills_alias_and_evidence():
 
 def test_required_skills_unrelated_stays_missing():
     jd = {"required_skills": ["terraform", "react"]}
-    score, matched, partial, missing = score_required_skills(RESUME, jd)
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, jd)
     assert "react" in missing
     assert "terraform" not in matched
     assert score < 60
 
 
 def test_no_required_skills_returns_none():
-    score, matched, partial, missing = score_required_skills(RESUME, {})
+    score, matched, partial, missing, evidence = score_required_skills(RESUME, {})
     assert score is None
     assert matched == [] and partial == [] and missing == []
 
@@ -91,59 +101,479 @@ def test_calibration_band():
     assert calibrate_similarity(0.95) == 100.0
 
 
-def test_responsibilities_calibrated_not_capped():
-    # A near-identical bullet pair must score close to 100, not ~cosine*100
-    jd = {"responsibilities": ["Deploy machine learning models with Docker on AWS"]}
-    score = score_responsibilities(RESUME, jd)
-    assert score is not None
-    assert score > 85, f"near-identical bullets scored only {score}"
-
-
-def test_responsibilities_none_when_jd_empty():
-    assert score_responsibilities(RESUME, {"responsibilities": []}) is None
-
-
 def test_certifications_none_when_jd_empty():
     assert score_certifications(RESUME, {}) is None
+
+
+# === Experience years: full-time-equivalent, not raw calendar span ===
+
+
+def test_total_experience_years_is_fte_weighted():
+    """Part-time work must not count as full years, and concurrent roles once."""
+    from services.matcher.experience import (
+        total_experience_years as _total_experience_years,
+    )
+
+    # 2 years as a working student (20h/week) is 1.0 FTE year, not 2.
+    ws_only = [
+        {
+            "employment_type": "working student",
+            "start_date": "01/2020",
+            "end_date": "01/2022",
+        }
+    ]
+    assert 0.9 <= _total_experience_years(ws_only) <= 1.2
+
+    # Same span full-time is worth double
+    ft_only = [
+        {"employment_type": "full-time", "start_date": "01/2020", "end_date": "01/2022"}
+    ]
+    assert _total_experience_years(ft_only) > _total_experience_years(ws_only) * 1.7
+
+    # A working student job held during a full-time role adds nothing
+    concurrent = [
+        {
+            "employment_type": "full-time",
+            "start_date": "01/2022",
+            "end_date": "01/2024",
+        },
+        {
+            "employment_type": "working student",
+            "start_date": "01/2022",
+            "end_date": "01/2024",
+        },
+    ]
+    assert _total_experience_years(concurrent) == _total_experience_years(
+        [
+            {
+                "employment_type": "full-time",
+                "start_date": "01/2022",
+                "end_date": "01/2024",
+            }
+        ]
+    )
+
+    # Unknown employment type is assumed full-time rather than silently discounted
+    unknown = [{"start_date": "01/2022", "end_date": "01/2024"}]
+    assert _total_experience_years(unknown) > 1.8
+
+
+def test_two_model_tiers(monkeypatch):
+    """Bulk work runs cheap; low-volume quality work may use a stronger model."""
+    from core import state
+
+    state.set_active("openai", None)  # no admin pin -> config decides
+    # Bulk: one JD extraction per fetched job, hundreds of relevance calls
+    assert state.get_model() == "gpt-4o-mini"
+    # Quality: summary, ATS rewrite, coverage judge - read or sent by the user
+    assert state.get_quality_model() == "gpt-5-mini"
+
+    # An explicit admin pin must win over both
+    state.set_active("openai", "gpt-4o-mini")
+    assert state.get_quality_model() == "gpt-4o-mini"
+    state.set_active("openai", None)
+
+
+def test_reasoning_models_get_different_request_params():
+    """gpt-5 rejects max_tokens/temperature; sending them would 400."""
+    from services.llm.providers.openai import _is_reasoning_model
+
+    assert _is_reasoning_model("gpt-5-mini")
+    assert _is_reasoning_model("o3-mini")
+    assert not _is_reasoning_model("gpt-4o-mini")
+
+
+# === Adzuna seen-stop pagination ===
+
+
+def test_adzuna_seen_stop_walks_until_nothing_new(monkeypatch):
+    """First run walks the whole pool; later runs stop at the first fully-seen
+    page, so no job in the window is ever skipped and repeats stay cheap."""
+    from services.fetchers import job_fetcher
+
+    # A 115-job date-sorted pool served in 50/50/15 pages.
+    pool = [{"id": str(i), "title": f"Job {i}", "created": ""} for i in range(115)]
+
+    calls = []
+
+    def fake_fetch_page(query, location, country, page):
+        calls.append(page)
+        start = (page - 1) * 50
+        return pool[start : start + 50], len(pool)
+
+    monkeypatch.setattr(job_fetcher, "_fetch_page", fake_fetch_page)
+    monkeypatch.setattr(job_fetcher, "ADZUNA_APP_ID", "x")
+    monkeypatch.setattr(job_fetcher, "ADZUNA_APP_KEY", "x")
+
+    # Run 1: nothing seen -> the entire pool is fetched (3 pages).
+    calls.clear()
+    run1 = job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=set())
+    assert len(run1) == 115
+    assert calls == [1, 2, 3]
+
+    # Run 2: everything seen -> one page downloaded, then stop.
+    calls.clear()
+    seen = {j.id for j in run1}
+    job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=seen)
+    assert calls == [1], "a fully-seen first page must stop pagination"
+
+    # Run 3: 10 new jobs appear at the top -> page 1 has new content, page 2 is
+    # fully seen, stop there. Nothing below is ever missed.
+    calls.clear()
+    newer = [{"id": f"n{i}", "title": f"New {i}", "created": ""} for i in range(10)]
+    pool[:0] = newer
+    run3 = job_fetcher.fetch_adzuna_jobs(query="q", location="", seen_ids=seen)
+    assert calls == [1, 2]
+    assert sum(1 for j in run3 if j.id not in seen) == 10
+
+    # Budget mode (seen_ids=None) is unchanged: one page for results=50.
+    calls.clear()
+    run4 = job_fetcher.fetch_adzuna_jobs(query="q", location="", results=50)
+    assert len(run4) == 50
+    assert calls == [1]
+
+
+# === Gates: years and language level are pass/fail, never points ===
+
+
+def test_jd_entry_gate_uses_extracted_data_not_title():
+    """After scoring, the JD's own fields catch seniors the title hid."""
+    from services.matcher.gates import jd_requires_seniority
+
+    # Title said "ML Engineer" but the extracted JD asks for 5 years
+    assert jd_requires_seniority(
+        {
+            "job": {"job_level": "not specified"},
+            "experience_requirements": ["5+ years"],
+        },
+        2,
+    )
+    # job_level field alone is enough
+    assert jd_requires_seniority({"job": {"job_level": "senior"}}, 2)
+    assert jd_requires_seniority({"job": {"job_level": "lead"}}, 2)
+
+    # Genuine entry roles pass
+    assert (
+        jd_requires_seniority(
+            {"job": {"job_level": "junior"}, "experience_requirements": ["1+ years"]}, 2
+        )
+        is None
+    )
+    assert jd_requires_seniority({"job": {"job_level": "not specified"}}, 2) is None
+    # mid-level within the year bar is allowed - many accept strong juniors
+    assert (
+        jd_requires_seniority(
+            {"job": {"job_level": "mid-level"}, "experience_requirements": ["2 years"]},
+            2,
+        )
+        is None
+    )
+
+
+def test_jd_entry_gate_reads_experience_stated_without_a_number():
+    """Seniority is often stated in words, not digits - EN and DE."""
+    from services.matcher.gates import jd_requires_seniority
+
+    def jd(reqs, summary=""):
+        return {
+            "job": {"job_level": "not specified"},
+            "experience_requirements": reqs,
+            "job_summary": summary,
+        }
+
+    for phrase in [
+        "several years of experience",
+        "proven experience in machine learning",
+        "extensive experience with cloud platforms",
+        "mehrjaehrige Berufserfahrung",
+        "mehrjährige Berufserfahrung",
+        "einschlaegige Berufserfahrung erforderlich",
+        "fundierte Kenntnisse in Python",
+        "years of professional experience required",
+    ]:
+        assert jd_requires_seniority(jd([phrase]), 2), f"missed: {phrase}"
+
+    # The phrase can live in the summary rather than the requirements list
+    assert jd_requires_seniority(
+        jd([], "we want several years of hands-on experience"), 2
+    )
+
+    # Entry phrasings must survive, even next to the word "experience"
+    for phrase in [
+        "no prior experience required",
+        "erste Berufserfahrung von Vorteil",
+        "Berufseinsteiger willkommen",
+        "recent graduates welcome",
+        "entry-level position",
+        "keine Berufserfahrung noetig",
+    ]:
+        assert (
+            jd_requires_seniority(jd([phrase]), 2) is None
+        ), f"false positive: {phrase}"
+
+
+def test_seniority_detection_is_robust():
+    """The deterministic net must catch how senior roles actually hide."""
+    from services.job_relevance import title_is_senior
+
+    senior = [
+        "Software Engineer II",
+        "Data Scientist III",
+        "ML Engineer IV",
+        "Software Engineer 3",
+        "L5 Software Engineer",
+        "SDE II",
+        "Teamlead Data Engineering",
+        "TechLead Backend",
+        "Expert Data Scientist",
+        "Chief Data Officer",
+        "VP Engineering",
+        "Vice President of Data",
+        "Distinguished Engineer",
+        "Softwareentwickler (m/w/d) mit Berufserfahrung",
+        "Erfahrener ML Engineer",
+        "Abteilungsleitung IT",
+        "Senior ML Engineer",
+        "Staff Engineer",
+    ]
+    for t in senior:
+        assert title_is_senior(t), f"leaked senior title: {t}"
+
+    # Version numbers are not seniority, and an explicit entry word always wins.
+    entry = [
+        "Junior ML Engineer",
+        "ML Engineer (m/w/d)",
+        "Machine Learning Engineer",
+        "Web3 Developer",
+        "Python 3 Developer",
+        "Angular 2 Developer",
+        "S3 Data Pipeline Engineer",
+        "Junior Engineer II",
+        "Werkstudent KI",
+        "Azubi Fachinformatiker",
+    ]
+    for t in entry:
+        assert not title_is_senior(t), f"false positive on entry title: {t}"
+
+
+def test_parse_required_years():
+    assert parse_required_years(["3+ years of experience"]) == 3
+    assert parse_required_years(["at least 5 years in ML"]) == 5
+    assert parse_required_years(["mindestens 3 Jahre Berufserfahrung"]) == 3
+    # A range is cleared by its lower bound
+    assert parse_required_years(["3-5 years"]) == 3
+    # Multiple statements: the highest is the binding constraint
+    assert parse_required_years(["2+ years Python", "5+ years leadership"]) == 5
+    # No number stated -> no gate
+    assert parse_required_years(["several years of experience"]) is None
+    assert parse_required_years([]) is None
+
+
+def test_experience_gate_uses_relevant_years_not_total():
+    """A career changer's years in another field must not clear this job's bar."""
+    from services.matcher.gates import relevant_experience
+
+    changer = {
+        "experience_entries": [
+            {
+                "title": "Mechanical Engineer",
+                "employment_type": "full-time",
+                "start_date": "01/2018",
+                "end_date": "01/2023",
+                "responsibilities": ["Designed CAD assemblies", "Ran FEA simulations"],
+            },
+            {
+                "title": "ML Engineer",
+                "employment_type": "full-time",
+                "start_date": "02/2023",
+                "end_date": "05/2024",
+                "responsibilities": ["Built models in Python with PyTorch on AWS"],
+            },
+        ],
+        "meta": {"total_experience_years": 6.3},
+    }
+    jd = {
+        "required_skills": ["python", "pytorch", "aws", "machine learning"],
+        "experience_requirements": ["5+ years of machine learning engineering"],
+    }
+
+    years, roles = relevant_experience(changer, jd)
+    # Only the ML role demonstrates the JD's skills
+    assert years < 2.0, f"irrelevant years leaked into the total: {years}"
+    assert [r["relevant"] for r in roles] == [False, True]
+
+    gate = check_experience_gate(changer, jd)
+    assert gate["required_years"] == 5
+    assert gate["total_years"] == 6.3
+    assert gate["candidate_years"] < 2.0
+    # 6.3 total would have passed; 1.3 relevant must not
+    assert gate["met"] is False
+
+    # A genuine 8-year ML engineer clears the same bar
+    veteran = {
+        "experience_entries": [
+            {
+                "title": "ML Engineer",
+                "employment_type": "full-time",
+                "start_date": "01/2016",
+                "end_date": "01/2024",
+                "responsibilities": ["Built models in Python with PyTorch on AWS"],
+            }
+        ],
+        "meta": {"total_experience_years": 8},
+    }
+    assert check_experience_gate(veteran, jd)["met"] is True
+
+    # JD states no years -> no gate at all
+    assert check_experience_gate(RESUME, {"experience_requirements": []}) is None
+
+
+def test_language_gate_compares_cefr_levels():
+    # Resume has German B1; JD wants C1 -> not met
+    gates = check_language_gates(
+        RESUME, {"languages": [{"language": "German", "proficiency": "C1"}]}
+    )
+    assert len(gates) == 1
+    assert gates[0]["language"] == "german"
+    assert gates[0]["met"] is False
+
+    # JD wants German B1 -> met
+    gates = check_language_gates(
+        RESUME, {"languages": [{"language": "German", "proficiency": "B1"}]}
+    )
+    assert gates[0]["met"] is True
+
+    # Language not on the resume at all -> not met
+    gates = check_language_gates(
+        RESUME, {"languages": [{"language": "French", "proficiency": "B2"}]}
+    )
+    assert gates[0]["met"] is False
+
+    # No language requirement -> no gates
+    assert check_language_gates(RESUME, {"languages": []}) == []
+
+
+def test_gates_never_enter_the_score(monkeypatch):
+    """A failed gate warns but must not reduce the weighted score."""
+    monkeypatch.setattr(
+        engine, "score_required_skills", lambda r, j: (100.0, ["python"], [], [], {})
+    )
+    monkeypatch.setattr(
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
+    )
+    monkeypatch.setattr(engine, "score_education", lambda r, j: None)
+    monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
+
+    jd = {
+        "required_skills": ["python"],
+        "experience_requirements": ["10+ years"],
+        "languages": [{"language": "German", "proficiency": "C1"}],
+    }
+    result = engine.match(RESUME, jd)
+
+    # Skills are perfect, so the score is perfect...
+    assert result["overall_score"] == 100.0
+    # ...while both gates are reported as unmet
+    assert result["gates"]["experience"]["met"] is False
+    assert result["gates"]["languages"][0]["met"] is False
+    assert result["gates"]["blocking_count"] == 2
+    # Gates are not sections
+    assert "experience" not in result["section_scores"]
+    assert "languages" not in result["section_scores"]
+
+
+# === Engine weighting ===
 
 
 def test_engine_excludes_none_sections_but_keeps_real_sixty(monkeypatch):
     """None sections are excluded from the overall; a legitimate 60.0 is not."""
     monkeypatch.setattr(
-        engine, "score_required_skills", lambda r, j: (90.0, ["python"], [], [])
+        engine, "score_required_skills", lambda r, j: (90.0, ["python"], [], [], {})
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
-    monkeypatch.setattr(engine, "score_responsibilities", lambda r, j: 60.0)
-    monkeypatch.setattr(engine, "score_experience", lambda r, j: None)
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
-    monkeypatch.setattr(engine, "score_languages", lambda r, j: (None, [], []))
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
+    monkeypatch.setattr(
+        engine, "judge_coverage", lambda r, j: (60.0, [], [], ["some duty"])
+    )
 
-    result = engine.match({"skills": ["python"]}, {"required_skills": ["python"]})
+    result = engine.match(
+        {"skills": ["python"]}, {"required_skills": ["python"]}, llm_judge=True
+    )
 
     assert result["section_scores"]["preferred_skills"] is None
     assert result["section_scores"]["responsibilities"] == 60.0
-    # Weighted mean of required_skills (0.28 * 90) and responsibilities
-    # (0.28 * 60) over their combined weight = 75. The old ==60 sentinel
-    # would have dropped responsibilities and returned 90.
-    assert result["overall_score"] == 75.0
+    # required_skills 0.40 x 90 + responsibilities 0.35 x 60, over weight 0.75
+    assert result["overall_score"] == 76.0
+
+
+def test_responsibilities_excluded_without_llm_judge(monkeypatch):
+    """Bulk job scoring skips the LLM judge; the section is None, not zero."""
+    monkeypatch.setattr(
+        engine, "score_required_skills", lambda r, j: (80.0, ["python"], [], [], {})
+    )
+    monkeypatch.setattr(
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
+    )
+    monkeypatch.setattr(engine, "score_education", lambda r, j: None)
+    monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
+
+    jd = {"required_skills": ["python"], "responsibilities": ["Do the thing"]}
+    result = engine.match({"skills": ["python"]}, jd)
+
+    assert result["section_scores"]["responsibilities"] is None
+    # Only required_skills is active, so it carries the whole score
+    assert result["overall_score"] == 80.0
+
+
+def test_summary_consumes_match_output_without_keyerror(monkeypatch):
+    """generate_summary must survive the real match() shape.
+
+    Regression: it indexed breakdown["experience"], which no longer exists now
+    that experience is a gate, and crashed /api/analyze with KeyError after the
+    LLM calls had already been paid for. It must also tolerate None sections.
+    """
+    import services.profile_summary as ps
+
+    monkeypatch.setattr(
+        ps,
+        "call_llm",
+        lambda p, **k: type(
+            "R", (), {"text": '{"profile":[],"strengths":[],"gaps":[],"focus":[]}'}
+        )(),
+    )
+    monkeypatch.setattr(
+        engine, "judge_coverage", lambda r, j: (62.5, [], [], ["a duty"])
+    )
+
+    jd = {
+        "required_skills": ["python"],
+        "responsibilities": ["Develop models"],
+        "experience_requirements": ["5+ years of ML engineering"],
+        "job": {"title": "ML Engineer"},
+    }
+    results = engine.match(RESUME, jd, llm_judge=True)
+
+    # preferred_skills / certifications are None here - the summary must cope
+    assert results["section_scores"]["preferred_skills"] is None
+    assert "experience" not in results["section_scores"]
+
+    out = ps.generate_summary(RESUME, jd, results)
+    assert out is not None
 
 
 def test_engine_reports_partial_lists(monkeypatch):
     monkeypatch.setattr(
         engine,
         "score_required_skills",
-        lambda r, j: (75.0, ["python"], ["tensorflow"], ["terraform"]),
+        lambda r, j: (75.0, ["python"], ["tensorflow"], ["terraform"], {}),
     )
     monkeypatch.setattr(
-        engine, "score_preferred_skills", lambda r, j: (None, [], [], [])
+        engine, "score_preferred_skills", lambda r, j: (None, [], [], [], {})
     )
-    monkeypatch.setattr(engine, "score_responsibilities", lambda r, j: None)
-    monkeypatch.setattr(engine, "score_experience", lambda r, j: None)
     monkeypatch.setattr(engine, "score_education", lambda r, j: None)
-    monkeypatch.setattr(engine, "score_languages", lambda r, j: (None, [], []))
     monkeypatch.setattr(engine, "score_certifications", lambda r, j: None)
 
     result = engine.match({"skills": ["python"]}, {"required_skills": ["python"]})

@@ -6,146 +6,16 @@ Uses an LLM to extract structured information from resume text.
 Includes light post-processing to normalize all string values to lowercase.
 """
 
-import datetime as dt
-import re
-
+from services.matcher.experience import (
+    entry_duration_years,
+    total_experience_years,
+)
 from services.prompts import get_resume_prompt
 from core.config import RESUME_MAX_CHARS
 from core.logger import get_logger
 from services.llm.caller import call_llm, parse_json_response
 
 logger = get_logger(__name__)
-
-# Words that mean "still ongoing" across the languages we support.
-_PRESENT_WORDS = {
-    "present",
-    "current",
-    "now",
-    "ongoing",
-    "to date",
-    "till date",
-    "heute",
-    "aktuell",
-    "laufend",
-    "actuel",
-    "actuellement",
-    "present",
-    "actual",
-    "presente",
-    "attuale",
-}
-
-_MONTHS = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
-}
-
-
-def _parse_month_year(value) -> dt.date | None:
-    """
-    Parse a normalized resume date into a date (day = 1).
-
-    Handles "YYYY-MM", "YYYY/MM", "YYYY", month-name forms like
-    "mar 2020", and "present"/current-role words. Returns None when the
-    value can't be parsed.
-    """
-    if not value or not isinstance(value, str):
-        return None
-
-    s = value.strip().lower()
-    if not s:
-        return None
-
-    if s in _PRESENT_WORDS or s.startswith("present") or s.startswith("current"):
-        return dt.date.today()
-
-    # YYYY-MM / YYYY/MM / YYYY.MM (optionally with a day after)
-    m = re.match(r"^(\d{4})[-/.](\d{1,2})", s)
-    if m:
-        year, month = int(m.group(1)), int(m.group(2))
-        if 1900 <= year <= 2100:
-            return dt.date(year, month if 1 <= month <= 12 else 1, 1)
-        return None
-
-    # MM/YYYY or M/YYYY (month-first, 4-digit year) - the common resume format.
-    m = re.match(r"^(\d{1,2})[-/.](\d{4})$", s)
-    if m:
-        month, year = int(m.group(1)), int(m.group(2))
-        if 1900 <= year <= 2100:
-            return dt.date(year, month if 1 <= month <= 12 else 1, 1)
-        return None
-
-    # DD/MM/YYYY (day-month-year) - take the month and year.
-    m = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$", s)
-    if m:
-        month, year = int(m.group(2)), int(m.group(3))
-        if 1900 <= year <= 2100:
-            return dt.date(year, month if 1 <= month <= 12 else 1, 1)
-        return None
-
-    # Any 4-digit year, plus an optional month name anywhere in the string.
-    ym = re.search(r"(\d{4})", s)
-    if ym:
-        year = int(ym.group(1))
-        if not (1900 <= year <= 2100):
-            return None
-        month = 1
-        mm = re.search(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)", s)
-        if mm:
-            month = _MONTHS[mm.group(1)]
-        return dt.date(year, month, 1)
-
-    return None
-
-
-def _entry_duration_years(entry: dict) -> float:
-    """Years between an entry's start and end dates, rounded to 1 decimal."""
-    start = _parse_month_year(entry.get("start_date", ""))
-    end = _parse_month_year(entry.get("end_date", ""))
-    if not start or not end or end < start:
-        return 0.0
-    return round((end - start).days / 365.25, 1)
-
-
-def _total_experience_years(entries: list) -> float:
-    """
-    Total years of experience as the union of all date ranges.
-
-    Merging overlapping ranges avoids double-counting concurrent roles
-    (the source of inflated, inconsistent totals).
-    """
-    intervals = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        start = _parse_month_year(entry.get("start_date", ""))
-        end = _parse_month_year(entry.get("end_date", ""))
-        if start and end and end >= start:
-            intervals.append((start, end))
-
-    if not intervals:
-        return 0.0
-
-    intervals.sort()
-    merged = [list(intervals[0])]
-    for start, end in intervals[1:]:
-        if start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
-
-    total_days = sum((end - start).days for start, end in merged)
-    return round(total_days / 365.25, 1)
 
 
 def _compute_experience_durations(result: dict) -> dict:
@@ -160,8 +30,8 @@ def _compute_experience_durations(result: dict) -> dict:
     if isinstance(entries, list):
         for entry in entries:
             if isinstance(entry, dict):
-                entry["duration_years"] = _entry_duration_years(entry)
-        total = _total_experience_years(entries)
+                entry["duration_years"] = entry_duration_years(entry)
+        total = total_experience_years(entries)
     else:
         total = 0.0
 
@@ -294,6 +164,8 @@ def extract_resume(resume_text: str) -> dict:
         resume_text = resume_text[:RESUME_MAX_CHARS]
 
     prompt = get_resume_prompt(resume_text)
+    # Extraction is structured parsing, not reasoning: it wants speed and a
+    # deterministic temperature, both of which a reasoning model gives up.
     _res = call_llm(prompt)
     response = _res.text if (_res and _res.text) else None
     result = parse_json_response(response)

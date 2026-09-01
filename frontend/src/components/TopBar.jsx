@@ -1,7 +1,16 @@
-import { getUser, logout } from '../lib/auth.js'
+import { useState, useEffect } from 'react'
+import { apiFetch, logout } from '../lib/auth.js'
 
 export default function TopBar() {
-  const user = getUser()
+  const [user, setUser] = useState(null)
+
+  // The email is not in the token (it must not sit in localStorage) - fetch it.
+  useEffect(() => {
+    apiFetch('/api/auth/me')
+      .then(r => (r?.ok ? r.json() : null))
+      .then(d => setUser(d))
+      .catch(() => {})
+  }, [])
 
   return (
     <header

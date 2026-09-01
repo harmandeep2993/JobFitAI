@@ -45,18 +45,23 @@ So I built it. The core works and I use it for every role I consider applying to
 ## What It Does
 
 **Resume Analyser** - Upload a PDF or DOCX resume and paste any job description. The AI
-pipeline extracts structured data from both, runs a weighted scoring engine across seven
-dimensions, and returns a 0-100 match score with a full breakdown, keyword gap list, and
-actionable recommendations. Re-running the same pair shows the score delta.
+pipeline extracts structured data from both, runs a weighted scoring engine over five
+resume/JD sections (required skills, responsibilities, preferred skills, education,
+certifications) plus two hard pass/fail gates (years of experience, language level), and
+returns a 0-100 match score with a full breakdown, keyword gap list, and actionable
+recommendations. Re-running the same pair shows the score delta.
 
 The matcher goes beyond naive keyword comparison: skill aliases resolve spelling variants
 (k8s = kubernetes, js = javascript), an evidence search finds skills used in experience
-bullets but missing from the skills section, related skills earn partial credit and show
-as a separate chip group, and similarity scores are calibrated against the embedding
-model so honest matches read as honest scores. Sections the JD says nothing about are
-excluded from the weighted overall instead of diluting it. Extraction handles academic
-profiles (publications, thesis, research roles) and German vocational qualifications
-(Ausbildung, Meister, Fachinformatiker) alongside standard industry CVs.
+bullets but missing from the skills section, responsibility coverage is judged by an LLM
+per duty rather than by keyword overlap, and prose similarity scores are calibrated
+against the embedding model so honest matches read as honest scores. A skill is matched
+or it is not - there is no fuzzy "related skill" credit, because the embedding model
+cannot reliably separate a genuinely related skill from a coincidentally similar one.
+Sections the JD says nothing about are excluded from the weighted overall instead of
+diluting it. Extraction handles academic profiles (publications, thesis, research roles)
+and German vocational qualifications (Ausbildung, Meister, Fachinformatiker) alongside
+standard industry CVs.
 
 **AI Resume Improvement** - After an analysis, one click feeds the identified gaps into a
 rewrite engine that generates improved, JD-aligned bullet points grounded in your real
@@ -81,9 +86,17 @@ rewrites it for the job description and exports the result as a ready-to-send DO
 **Resume Vault** - Store up to 3 resume versions (base + tailored). Switch between them
 instantly when scoring a new job. Past analyses can be reopened in full from the History tab.
 
-**LLM Routing** - Analyses run on OpenAI GPT-4o-mini with automatic retry and Groq fallback.
-Providers are forced into native JSON mode so structured extraction can never return
-malformed output. The active provider is an app-wide setting controlled by the admin account.
+**LLM Routing** - Every LLM call goes through one router (`call_llm()`) with task-based
+tiering. High-volume work (resume/JD extraction, the per-job JD parse) runs on a cheap
+fast model (OpenAI GPT-4o-mini); low-volume work the user reads or that decides a single
+score (profile summary, ATS rewrite, per-duty responsibility judge) runs on a stronger
+model (GPT-5-mini, or Claude through the Anthropic provider). Each tier names its own
+provider, so cheap and quality work can run on different vendors, and a tier whose API
+key is missing falls back to the active provider instead of failing. The router adds four
+retries with exponential backoff, an automatic Groq fallback, proactive tokens-per-minute
+pacing for Groq, and a typed result that degrades instead of raising. Providers are forced
+into native JSON mode so structured extraction can never return malformed output. The
+active provider is an app-wide setting controlled by the admin account.
 
 **Security & Beta Hardening** - Per-IP rate limits on credential endpoints and a per-user
 budget on every LLM-backed endpoint, request body size caps, security headers, constant-time
@@ -113,10 +126,51 @@ analysis results are cached (versioned by scoring engine) so repeat runs cost ze
 | Frontend | React 18 + Vite + Tailwind CSS |
 | Animations | Framer Motion |
 | PDF / DOCX parsing | pdfplumber, PyMuPDF, python-docx |
-| LLM extraction | OpenAI GPT-4o / Groq / Ollama |
-| Semantic dedup | sentence-transformers + ChromaDB |
+| LLM providers | OpenAI, Anthropic (Claude), Groq, Ollama - one task-routing `call_llm()` |
+| Embeddings | sentence-transformers `paraphrase-multilingual-MiniLM-L12-v2` (matching + dedup) |
+| Semantic dedup | ChromaDB (cross-board near-duplicate jobs) |
 | Job sources | Adzuna Germany, Arbeitnow, Bundesagentur fur Arbeit |
 | Auth | JWT (HS256) via python-jose + bcrypt |
+
+---
+
+## Architecture
+
+![JobsFitAI architecture](docs/architecture.png)
+
+<!-- Diagram not committed yet. Export your architecture image to docs/architecture.png
+     (create the docs/ folder at the repo root). Do NOT use a folder literally named
+     "images" - .gitignore ignores it. SVG also works: docs/architecture.svg. -->
+
+Two pipelines share the same extraction step, LLM router, and scoring engine.
+
+**Analyser pipeline** - one resume against one JD:
+
+```
+upload -> parse (PDF/DOCX -> text) -> extract_all() -> match() -> generate_summary() -> SHA-256 cache -> JSON
+                                      2 LLM calls      deterministic   1 LLM call
+                                                       + 1 LLM per-duty coverage judge
+```
+
+**Job-match pipeline** - many live jobs, run as a background task:
+
+```
+GET /api/match/run
+  fetch_combined()                          discover_and_score()
+    Adzuna   (per title, per country)         1. skip ids in seen_jobs        (DB)
+    Arbeitnow feed (DE)                       2. recency filter               (free)
+    Bundesagentur API (DE)                    3. keyword seniority gate       (free regex)
+    merge + dedup (id, title|company)         4. LLM relevance gate           (1 call / 30 titles)
+                                              5. ChromaDB dedup              (title+company embedding)
+                                              6. enrich thin snippets        (JSON-LD scrape)
+                                              7. extract_jd() + match()       (1 LLM call / job)
+                                             -> upsert score + JD json -> dashboard
+```
+
+Design rule: **the LLM extracts structured data; a deterministic engine computes the
+score.** Scores stay reproducible, cacheable, and explainable, and cost scales with the
+number of jobs rather than with model reasoning. Cheap deterministic gates run before any
+paid LLM call, so each run only pays to score the jobs that survive the funnel.
 
 ---
 
@@ -276,8 +330,8 @@ if the repository was ever pushed or cloned.
 ## Current Status
 
 Core pipeline works end to end: resume parsing, LLM extraction with canonical skill
-normalization, alias- and evidence-aware semantic scoring with calibrated similarities,
-keyword gap analysis with partial-credit related skills, ATS check and optimise with DOCX
+normalization, alias- and evidence-aware skill scoring with calibrated prose similarities
+and an LLM per-duty coverage judge, keyword gap analysis, ATS check and optimise with DOCX
 export, AI resume improvement, and live job fetching from three German job boards through
 a two-part entry-level gate (keyword expansion + IT/CS-scoped LLM relevance).
 
@@ -285,7 +339,7 @@ The React frontend is live with full auth (invite-only beta), resume vault, anal
 improve flow, ATS tab, job matches with editable role chips, live run progress, stop
 control, undo delete and application tracking, a day-grouped history timeline, and settings
 with account management. The API is hardened for public beta (rate limits, body caps,
-security headers, per-user isolation). A contract + matcher test suite (42 tests) pins
+security headers, per-user isolation). A contract + matcher test suite (58 tests) pins
 every frontend-backend interaction and every scoring behaviour.
 
 **In progress:** production deployment prep (usage quotas, GDPR account deletion, Docker),

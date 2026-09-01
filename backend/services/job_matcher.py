@@ -8,6 +8,7 @@ Each job costs one JD-extraction LLM call; the resume is extracted once
 """
 
 import json as _json
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
@@ -95,6 +96,18 @@ def _score_one(job: Job, resume_json: dict) -> dict | None:
 # Progress of the current/last run per user, polled by the dashboard for live updates.
 _run_statuses: dict[str, dict] = {}
 
+# Guards the check-and-set on a user's "running" flag. begin_run() (manual
+# route) and discover_and_score() (scheduler + any direct caller) both claim
+# it, so two runs can never pass the gate at once. Without this the scheduler
+# could start a scoring loop while a manual run's loop is still live - both
+# then increment the same status["checked"], which runs past status["total"]
+# (the "688 of 446 checked" symptom).
+_status_lock = threading.Lock()
+
+# Phases during which a scoring loop is actively stepping through jobs. A
+# second run entering while the status sits in one of these is a duplicate.
+_ACTIVE_SCORING_PHASES = ("classifying", "scoring", "stopping")
+
 
 def _default_status() -> dict:
     """Return a blank run-status dict."""
@@ -114,18 +127,21 @@ def get_run_status(user_id: str) -> dict:
 
 
 def begin_run(user_id: str) -> bool:
-    """Mark a run as starting for this user. Returns False if one is already running."""
-    if _run_statuses.get(user_id, {}).get("running"):
-        return False
-    _run_statuses[user_id] = {
-        "running": True,
-        "phase": "fetching",
-        "checked": 0,
-        "scored": 0,
-        "total": 0,
-        "cancel": False,
-    }
-    return True
+    """Claim the run slot for this user. Returns False if one is already running."""
+    # Atomic check-and-set: two callers racing here (manual fetch + scheduler)
+    # must not both see "not running" and proceed.
+    with _status_lock:
+        if _run_statuses.get(user_id, {}).get("running"):
+            return False
+        _run_statuses[user_id] = {
+            "running": True,
+            "phase": "fetching",
+            "checked": 0,
+            "scored": 0,
+            "total": 0,
+            "cancel": False,
+        }
+        return True
 
 
 def request_stop(user_id: str) -> bool:
@@ -316,8 +332,26 @@ def discover_and_score(
         titles: The user's target titles - used to decide whether student
             posts (werkstudent/praktikum) were explicitly asked for.
     """
-    status = _run_statuses.setdefault(user_id, _default_status())
-    status["running"] = True  # idempotent - begin_run may have set this already
+    # Claim the run slot. begin_run() already set this for the manual route and
+    # the scheduler calls begin_run() too; this guard is the backstop. If a
+    # scoring loop is already stepping through jobs for this user, a second
+    # entry here would share status["checked"] with it - refuse instead.
+    with _status_lock:
+        existing = _run_statuses.get(user_id)
+        if existing and existing.get("phase") in _ACTIVE_SCORING_PHASES:
+            logger.warning(
+                "discover_and_score already active for user %s (phase=%s) - dropping duplicate run",
+                user_id,
+                existing["phase"],
+            )
+            return {
+                "checked": 0,
+                "scored": 0,
+                "skipped": True,
+                "results": match_repo.get_all(user_id),
+            }
+        status = _run_statuses.setdefault(user_id, _default_status())
+        status["running"] = True  # idempotent - begin_run set this for the manual route
 
     resume_json = session.get_resume(user_id)
     if not resume_json:

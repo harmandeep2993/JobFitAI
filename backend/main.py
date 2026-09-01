@@ -44,7 +44,9 @@ from repositories import resume_repo as resume_store
 from repositories import settings_repo as settings_store
 from services.extractors.resume_extractor import extract_resume
 from services.job_matcher import (
+    begin_run,
     discover_and_score,
+    end_run,
     fetch_combined,
     get_run_status,
 )
@@ -390,6 +392,11 @@ async def _auto_fetch_loop() -> None:
                     continue
                 if not session.has_resume(uid) or get_run_status(uid)["running"]:
                     continue
+                # Claim the run slot before fetching so a manual fetch started
+                # during this (slow, paginated) fetch is refused rather than
+                # running a second scoring loop against the same status dict.
+                if not begin_run(uid):
+                    continue
 
                 _sched_last_ref[uid] = time.monotonic()
 
@@ -416,13 +423,20 @@ async def _auto_fetch_loop() -> None:
                         titles=titles,
                     )
 
-                out = await run_in_threadpool(_run)
-                logger.info(
-                    "[scheduler] user=%s: %d checked, %d scored",
-                    uid,
-                    out.get("checked", 0),
-                    out.get("scored", 0),
-                )
+                try:
+                    out = await run_in_threadpool(_run)
+                    logger.info(
+                        "[scheduler] user=%s: %d checked, %d scored",
+                        uid,
+                        out.get("checked", 0),
+                        out.get("scored", 0),
+                    )
+                except Exception as run_err:
+                    # fetch_combined can raise before discover_and_score's
+                    # finally clears the flag; release the slot so the next
+                    # tick (and manual fetches) are not blocked forever.
+                    logger.error("[scheduler] run failed for user %s: %s", uid, run_err)
+                    end_run(uid)
         except Exception as e:
             logger.error("[scheduler] error: %s", e)
 
